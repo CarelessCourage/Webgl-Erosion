@@ -3,6 +3,7 @@ import { GPUContext } from '../core/GPUContext';
 import { PlaneGeometry } from '../geometry/Plane';
 import { PerlinNoise } from '../utils/PerlinNoise';
 import terrainShaderRaw from '../shaders/terrain.wgsl?raw';
+import shadowMapShaderRaw from '../shaders/shadowmap.wgsl?raw';
 
 // Strip any "export default" wrapper if Vite added it
 let terrainShader = terrainShaderRaw;
@@ -10,6 +11,17 @@ if (terrainShader.startsWith('export default "')) {
     const match = terrainShader.match(/^export default "(.*)"$/s);
     if (match) {
         terrainShader = match[1]
+            .replace(/\\n/g, '\n')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\');
+    }
+}
+
+let shadowMapShader = shadowMapShaderRaw;
+if (shadowMapShader.startsWith('export default "')) {
+    const match = shadowMapShader.match(/^export default "(.*)"$/s);
+    if (match) {
+        shadowMapShader = match[1]
             .replace(/\\n/g, '\n')
             .replace(/\\"/g, '"')
             .replace(/\\\\/g, '\\');
@@ -28,6 +40,15 @@ export class TerrainRenderer {
     private indexCount: number;
     private heightTexture: GPUTexture;
     private sampler: GPUSampler;
+    
+    // Shadow mapping
+    private shadowPipeline: GPURenderPipeline;
+    private shadowMapTexture: GPUTexture;
+    private shadowMapView: GPUTextureView;
+    private shadowSampler: GPUSampler;
+    private shadowUniformBuffer: GPUBuffer;
+    private shadowBindGroup: GPUBindGroup;
+    private readonly shadowMapSize = 2048;
 
     constructor(gpuContext: GPUContext, geometry: PlaneGeometry) {
         this.gpuContext = gpuContext;
@@ -40,9 +61,12 @@ export class TerrainRenderer {
         this.indexBuffer = this.createBuffer(geometry.indices, GPUBufferUsage.INDEX);
 
         // Create uniform buffer
-        // Layout: mat4 (64) + mat4 (64) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) = 256 bytes
+        // Layout: mat4 model (64) + mat4 viewProj (64) + mat4 lightViewProj (64) + 
+        // vec3 camera (12) + f32 mode (4) + vec3 lowColor (12) + f32 disableDisp (4) + 
+        // vec3 midColor (12) + f32 lowThresh (4) + vec3 highColor (12) + f32 highThresh (4) + 
+        // vec3 bottomColor (12) + f32 shadowsEnabled (4) + vec3 lightDir (12) + f32 shadowIntensity (4) = 320 bytes
         this.uniformBuffer = gpuContext.device.createBuffer({
-            size: 256,
+            size: 320,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
 
@@ -62,6 +86,27 @@ export class TerrainRenderer {
             minFilter: 'nearest',
             addressModeU: 'clamp-to-edge',
             addressModeV: 'clamp-to-edge',
+        });
+        
+        // Create shadow map texture
+        this.shadowMapTexture = gpuContext.device.createTexture({
+            size: [this.shadowMapSize, this.shadowMapSize],
+            format: 'depth32float',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.shadowMapView = this.shadowMapTexture.createView();
+        
+        // Create shadow sampler (comparison sampler for shadow mapping)
+        this.shadowSampler = gpuContext.device.createSampler({
+            compare: 'less',
+            magFilter: 'linear',
+            minFilter: 'linear',
+        });
+        
+        // Create shadow uniform buffer (for model matrix + light view-proj matrix + disableDisplacement)
+        this.shadowUniformBuffer = gpuContext.device.createBuffer({
+            size: 160, // mat4x4 (64) + mat4x4 (64) + vec4f (16) = 160 bytes (WGSL alignment)
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
 
         // Create shader module
@@ -141,6 +186,76 @@ export class TerrainRenderer {
         console.error('Failed to create pipeline:', error);
         throw error;
     }
+        
+        // Create shadow map shader and pipeline
+        const shadowShaderModule = gpuContext.device.createShaderModule({
+            label: 'Shadow Map Shader',
+            code: shadowMapShader,
+        });
+        
+        this.shadowPipeline = gpuContext.device.createRenderPipeline({
+            label: 'Shadow Map Pipeline',
+            layout: 'auto',
+            vertex: {
+                module: shadowShaderModule,
+                entryPoint: 'vertexMain',
+                buffers: [
+                    {
+                        arrayStride: 16,
+                        attributes: [{
+                            shaderLocation: 0,
+                            offset: 0,
+                            format: 'float32x4',
+                        }],
+                    },
+                    {
+                        arrayStride: 16,
+                        attributes: [{
+                            shaderLocation: 1,
+                            offset: 0,
+                            format: 'float32x4',
+                        }],
+                    },
+                    {
+                        arrayStride: 8,
+                        attributes: [{
+                            shaderLocation: 2,
+                            offset: 0,
+                            format: 'float32x2',
+                        }],
+                    },
+                ],
+            },
+            fragment: {
+                module: shadowShaderModule,
+                entryPoint: 'fragmentMain',
+                targets: [],  // No color output, only depth
+            },
+            primitive: {
+                topology: 'triangle-list',
+                cullMode: 'back',  // Cull back faces for shadows
+            },
+            depthStencil: {
+                format: 'depth32float',
+                depthWriteEnabled: true,
+                depthCompare: 'less',
+            },
+        });
+        
+        // Create shadow bind group
+        this.shadowBindGroup = gpuContext.device.createBindGroup({
+            layout: this.shadowPipeline.getBindGroupLayout(0),
+            entries: [
+                {
+                    binding: 0,
+                    resource: { buffer: this.shadowUniformBuffer },
+                },
+                {
+                    binding: 1,
+                    resource: this.heightTexture.createView(),
+                },
+            ],
+        });
 
         // Create bind group
         this.bindGroup = gpuContext.device.createBindGroup({
@@ -198,6 +313,7 @@ export class TerrainRenderer {
     updateUniforms(
         modelMatrix: mat4,
         viewProjMatrix: mat4,
+        lightViewProjMatrix: mat4,
         cameraPos: vec3,
         visualizationMode: string = 'terrain',
         disableDisplacement: boolean = false,
@@ -207,9 +323,11 @@ export class TerrainRenderer {
         bottomColor: [number, number, number] = [40, 30, 20],
         lowThreshold: number = 0.3,
         highThreshold: number = 0.6,
-        wireframe: boolean = false
+        shadowsEnabled: boolean = true,
+        lightDirection: vec3 = vec3.fromValues(0.5, 1.0, 0.3),
+        shadowIntensity: number = 0.5
     ) {
-        const uniformData = new Float32Array(64); // 256 bytes / 4 = 64 floats
+        const uniformData = new Float32Array(80); // 320 bytes / 4 = 80 floats
         
         // Model matrix (16 floats at offset 0)
         uniformData.set(modelMatrix, 0);
@@ -217,37 +335,77 @@ export class TerrainRenderer {
         // ViewProj matrix (16 floats at offset 16)
         uniformData.set(viewProjMatrix, 16);
         
-        // Camera position (3 floats + 1 padding at offset 32)
-        uniformData[32] = cameraPos[0];
-        uniformData[33] = cameraPos[1];
-        uniformData[34] = cameraPos[2];
-        uniformData[35] = visualizationMode === 'heightmap' ? 1.0 : 0.0;
+        // Light ViewProj matrix (16 floats at offset 32)
+        uniformData.set(lightViewProjMatrix, 32);
         
-        // Low color (3 floats + 1 padding at offset 36)
-        uniformData[36] = lowColor[0];
-        uniformData[37] = lowColor[1];
-        uniformData[38] = lowColor[2];
-        uniformData[39] = disableDisplacement ? 1.0 : 0.0;
+        // Camera position (3 floats + 1 padding at offset 48)
+        uniformData[48] = cameraPos[0];
+        uniformData[49] = cameraPos[1];
+        uniformData[50] = cameraPos[2];
+        uniformData[51] = visualizationMode === 'heightmap' ? 1.0 : 0.0;
         
-        // Mid color (3 floats + 1 padding at offset 40)
-        uniformData[40] = midColor[0];
-        uniformData[41] = midColor[1];
-        uniformData[42] = midColor[2];
-        uniformData[43] = lowThreshold;
+        // Low color (3 floats + 1 padding at offset 52)
+        uniformData[52] = lowColor[0];
+        uniformData[53] = lowColor[1];
+        uniformData[54] = lowColor[2];
+        uniformData[55] = disableDisplacement ? 1.0 : 0.0;
         
-        // High color (3 floats + 1 padding at offset 44)
-        uniformData[44] = highColor[0];
-        uniformData[45] = highColor[1];
-        uniformData[46] = highColor[2];
-        uniformData[47] = highThreshold;
+        // Mid color (3 floats + 1 padding at offset 56)
+        uniformData[56] = midColor[0];
+        uniformData[57] = midColor[1];
+        uniformData[58] = midColor[2];
+        uniformData[59] = lowThreshold;
         
-        // Bottom color (3 floats + 1 padding at offset 48)
-        uniformData[48] = bottomColor[0];
-        uniformData[49] = bottomColor[1];
-        uniformData[50] = bottomColor[2];
-        uniformData[51] = wireframe ? 1.0 : 0.0;
+        // High color (3 floats + 1 padding at offset 60)
+        uniformData[60] = highColor[0];
+        uniformData[61] = highColor[1];
+        uniformData[62] = highColor[2];
+        uniformData[63] = highThreshold;
+        
+        // Bottom color (3 floats + 1 padding at offset 64)
+        uniformData[64] = bottomColor[0];
+        uniformData[65] = bottomColor[1];
+        uniformData[66] = bottomColor[2];
+        uniformData[67] = shadowsEnabled ? 1.0 : 0.0;
+        
+        // Light direction (3 floats + 1 padding at offset 68)
+        uniformData[68] = lightDirection[0];
+        uniformData[69] = lightDirection[1];
+        uniformData[70] = lightDirection[2];
+        uniformData[71] = shadowIntensity;
         
         this.gpuContext.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
+    }
+    
+    /**
+     * Update shadow map uniform buffer with model and light view-projection matrices
+     */
+    updateShadowUniforms(modelMatrix: mat4, lightViewProjMatrix: mat4, disableDisplacement: number) {
+        const shadowUniformData = new Float32Array(40); // 160 bytes / 4 = 40 floats
+        shadowUniformData.set(modelMatrix, 0);          // Offset 0-15
+        shadowUniformData.set(lightViewProjMatrix, 16); // Offset 16-31
+        shadowUniformData[32] = disableDisplacement;     // Offset 32 (rest is padding)
+        this.gpuContext.device.queue.writeBuffer(this.shadowUniformBuffer, 0, shadowUniformData);
+    }
+    
+    /**
+     * Render the scene to the shadow map from the light's perspective
+     */
+    renderShadowMap(passEncoder: GPURenderPassEncoder) {
+        passEncoder.setPipeline(this.shadowPipeline);
+        passEncoder.setBindGroup(0, this.shadowBindGroup);
+        passEncoder.setVertexBuffer(0, this.vertexBuffer);
+        passEncoder.setVertexBuffer(1, this.normalBuffer);
+        passEncoder.setVertexBuffer(2, this.uvBuffer);
+        passEncoder.setIndexBuffer(this.indexBuffer, 'uint32');
+        passEncoder.drawIndexed(this.indexCount);
+    }
+    
+    /**
+     * Get the shadow map texture view for debugging
+     */
+    getShadowMapView(): GPUTextureView {
+        return this.shadowMapView;
     }
 
     render(passEncoder: GPURenderPassEncoder) {
@@ -269,6 +427,8 @@ export class TerrainRenderer {
         this.indexBuffer.destroy();
         this.uniformBuffer.destroy();
         this.heightTexture.destroy();
+        this.shadowMapTexture.destroy();
+        this.shadowUniformBuffer.destroy();
     }
 
     /**

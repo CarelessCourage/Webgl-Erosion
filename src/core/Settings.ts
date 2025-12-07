@@ -50,6 +50,17 @@ export class Settings {
         highThreshold: 0.35,
         backgroundColor: [135, 206, 235] as [number, number, number], // Sky blue
     };
+    
+    // Lighting settings
+    public lighting = {
+        shadowsEnabled: true,
+        shadowIntensity: 0.5,
+        lightDirection: {
+            x: 0.5,
+            y: 1.0,
+            z: 0.3,
+        },
+    };
 
     private gui: dat.GUI;
     private onRegenerateCallback?: () => void;
@@ -129,6 +140,15 @@ export class Settings {
         this.colorFolder.add(this.colors, 'highThreshold', 0.0, 1.0, 0.05).name('Mid → High Threshold');
         this.colorFolder.addColor(this.colors, 'backgroundColor').name('Background Color');
         this.updateColorFolderVisibility();
+        
+        // Lighting settings folder
+        const lightingFolder = this.gui.addFolder('Lighting & Shadows');
+        lightingFolder.add(this.lighting, 'shadowsEnabled').name('Enhanced Lighting');
+        lightingFolder.add(this.lighting, 'shadowIntensity', 0.0, 1.0, 0.05).name('Ambient Darkness');
+        lightingFolder.add(this.lighting.lightDirection, 'x', -1.0, 1.0, 0.1).name('Light X');
+        lightingFolder.add(this.lighting.lightDirection, 'y', 0.1, 2.0, 0.1).name('Light Y (Height)');
+        lightingFolder.add(this.lighting.lightDirection, 'z', -1.0, 1.0, 0.1).name('Light Z');
+        lightingFolder.open();
     }
 
     public onRegenerate(callback: () => void): void {

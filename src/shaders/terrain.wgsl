@@ -3,6 +3,7 @@
 struct Uniforms {
     modelMatrix: mat4x4f,
     viewProjMatrix: mat4x4f,
+    lightViewProjMatrix: mat4x4f,
     cameraPosition: vec3f,
     visualizationMode: f32,        // 0.0 = terrain, 1.0 = heightmap
     lowColor: vec3f,
@@ -12,7 +13,9 @@ struct Uniforms {
     highColor: vec3f,
     highThreshold: f32,
     bottomColor: vec3f,
-    wireframeMode: f32,            // 0.0 = off, 1.0 = on
+    shadowsEnabled: f32,           // 0.0 = off, 1.0 = on
+    lightDirection: vec3f,
+    shadowIntensity: f32,          // 0.0 to 1.0
 }
 
 struct VertexInput {
@@ -66,27 +69,34 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     let texCoords = vec2i(input.uv * 512.0);
     let height = textureLoad(heightMap, texCoords, 0).r;
     
-    // Wireframe rendering - this shouldn't be reached in normal rendering
-    // Wireframe is handled by a separate render pass with line-list topology
-    if (uniforms.wireframeMode > 0.5) {
-        return vec4f(0.0, 0.0, 0.0, 1.0);
-    }
-    
     // Heightmap visualization mode (grayscale)
     if (uniforms.visualizationMode > 0.5) {
         let gray = vec3f(height);
         return vec4f(gray, 1.0);
     }
     
-    // Terrain mode with lighting and color gradients
-    let lightDir = normalize(vec3f(0.5, 1.0, 0.3));
-    let normal = normalize(input.normal);
+    // Calculate proper normal from heightmap for accurate lighting
+    let texelSize = 1.0 / 512.0;
+    let heightL = textureLoad(heightMap, texCoords + vec2i(-1, 0), 0).r;
+    let heightR = textureLoad(heightMap, texCoords + vec2i(1, 0), 0).r;
+    let heightD = textureLoad(heightMap, texCoords + vec2i(0, -1), 0).r;
+    let heightU = textureLoad(heightMap, texCoords + vec2i(0, 1), 0).r;
     
-    // Detect surface type by normal direction:
-    // - Top surface: normal.y close to 1.0
-    // - Bottom surface: normal.y close to -1.0
-    // - Side surfaces: normal.y close to 0.0
-    let isTopSurface = normal.y > 0.5;
+    // Calculate tangent vectors scaled by displacement
+    let scale = 5.0; // Match displacement scale
+    let dx = vec3f(2.0 * texelSize * 10.0, (heightR - heightL) * scale, 0.0);
+    let dy = vec3f(0.0, (heightU - heightD) * scale, 2.0 * texelSize * 10.0);
+    
+    // Cross product gives surface normal
+    let calculatedNormal = normalize(cross(dx, dy));
+    
+    // Use calculated normal for top surface, mesh normal for sides/bottom
+    let isTopSurface = input.normal.y > 0.5;
+    let normal = select(normalize(input.normal), calculatedNormal, isTopSurface);
+    
+    // Terrain mode with lighting and color gradients
+    // Negate light direction - GUI values represent where light comes FROM
+    let lightDir = normalize(-uniforms.lightDirection);
     
     var color: vec3f;
     var diffuse: f32;
@@ -103,8 +113,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
             let t = (height - uniforms.highThreshold) / 0.3;
             color = mix(uniforms.midColor / 255.0, uniforms.highColor / 255.0, clamp(t, 0.0, 1.0));
         }
-        // Top surface gets normal diffuse lighting with low ambient
-        diffuse = max(dot(normal, lightDir), 0.2);
+        // Top surface gets normal diffuse lighting with ambient control
+        // Use shadowIntensity to control ambient light (0 = bright, 1 = dark ambient)
+        let ambientLevel = mix(0.4, 0.1, uniforms.shadowIntensity);
+        diffuse = max(dot(normal, lightDir), ambientLevel);
+        
+        // Enhanced lighting: approximate AO from height variation
+        if (uniforms.shadowsEnabled > 0.5) {
+            // Sample nearby heights for simple AO approximation
+            let avgHeight = (heightL + heightR + heightD + heightU) * 0.25;
+            let heightVariation = abs(height - avgHeight);
+            let ao = 1.0 - (heightVariation * 0.5); // Valleys get darker
+            diffuse *= mix(1.0, ao, 0.3); // Subtle AO effect
+        }
     } else {
         // Use solid bottom color for sides and bottom with higher ambient lighting
         color = uniforms.bottomColor / 255.0;
@@ -112,5 +133,25 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
         diffuse = max(dot(normal, lightDir), 0.0) * 0.3 + 0.7;
     }
     
-    return vec4f(color * diffuse, 1.0);
+    // Apply lighting
+    var finalColor = color * diffuse;
+    
+    // Draw a sun sphere in the sky for visual reference
+    // Calculate sun position in view space (light direction points FROM sun)
+    let sunDistance = 100.0;
+    let sunPos = uniforms.cameraPosition + uniforms.lightDirection * sunDistance;
+    let sunDir = normalize(sunPos - input.worldPos);
+    let sunAngle = dot(sunDir, normalize(uniforms.cameraPosition - input.worldPos));
+    
+    // Draw sun if looking in that direction (simple sphere approximation)
+    if (sunAngle > 0.998) { // Very narrow cone
+        let sunBrightness = smoothstep(0.998, 0.9995, sunAngle);
+        let sunColor = vec3f(1.0, 0.95, 0.8); // Warm sun color
+        finalColor = mix(finalColor, sunColor, sunBrightness * 0.8);
+    }
+    
+    // Shadows disabled - causes acne on low-poly displaced mesh
+    // Would need tessellation or higher mesh resolution for proper shadows
+    
+    return vec4f(finalColor, 1.0);
 }

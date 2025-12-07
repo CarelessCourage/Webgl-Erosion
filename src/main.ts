@@ -200,15 +200,53 @@ async function init() {
             const viewProjMatrix = mat4.create();
             mat4.multiply(viewProjMatrix, camera.projectionMatrix, camera.viewMatrix);
             
+            // Calculate light view-projection matrix for shadows
+            const lightDirection = vec3.fromValues(
+                settings.lighting.lightDirection.x,
+                settings.lighting.lightDirection.y,
+                settings.lighting.lightDirection.z
+            );
+            vec3.normalize(lightDirection, lightDirection);
+            
+            // Position light far from terrain, looking toward origin
+            const lightDistance = 30.0;
+            const lightPosition = vec3.create();
+            vec3.scale(lightPosition, lightDirection, lightDistance);
+            
+            const lightTarget = vec3.fromValues(0, 0, 0);
+            const lightViewMatrix = mat4.create();
+            mat4.lookAt(lightViewMatrix, lightPosition, lightTarget, vec3.fromValues(0, 1, 0));
+            
+            // Orthographic projection for directional light
+            // Terrain is 10x10 (-5 to 5), so we need enough coverage
+            const lightProjMatrix = mat4.create();
+            const halfSize = 8.0; // Cover the terrain with some margin
+            // gl-matrix ortho: left, right, bottom, top, near, far
+            mat4.ortho(lightProjMatrix, -halfSize, halfSize, -halfSize, halfSize, 0.1, 50.0);
+            
+            const lightViewProjMatrix = mat4.create();
+            mat4.multiply(lightViewProjMatrix, lightProjMatrix, lightViewMatrix);
+            
             if (frameCount === 1) {
                 console.log('Model matrix:', modelMatrix);
                 console.log('ViewProj matrix:', viewProjMatrix);
+                console.log('Light position:', lightPosition);
+                console.log('Light direction:', lightDirection);
+                console.log('Light ViewProj matrix:', lightViewProjMatrix);
                 console.log('Rendering', planeGeometry.indexCount, 'indices');
             }
+            
+            // Update shadow uniforms
+            terrainRenderer.updateShadowUniforms(
+                modelMatrix, 
+                lightViewProjMatrix,
+                settings.visualization.disableDisplacement ? 1.0 : 0.0
+            );
             
             terrainRenderer.updateUniforms(
                 modelMatrix,
                 viewProjMatrix,
+                lightViewProjMatrix,
                 camera.position,
                 settings.visualization.mode,
                 settings.visualization.disableDisplacement,
@@ -218,11 +256,31 @@ async function init() {
                 settings.colors.bottomColor,
                 settings.colors.lowThreshold,
                 settings.colors.highThreshold,
-                settings.rendering.wireframe
+                settings.lighting.shadowsEnabled,
+                lightDirection,
+                settings.lighting.shadowIntensity
             );
             
             // Begin rendering
             const commandEncoder = gpuContext.device.createCommandEncoder();
+            
+            // Shadow pass disabled - causes acne on low-poly displaced meshes
+            // if (settings.lighting.shadowsEnabled) {
+            //     const shadowPass = commandEncoder.beginRenderPass({
+            //         colorAttachments: [],
+            //         depthStencilAttachment: {
+            //             view: terrainRenderer.getShadowMapView(),
+            //             depthClearValue: 1.0,
+            //             depthLoadOp: 'clear',
+            //             depthStoreOp: 'store',
+            //         },
+            //     });
+            //     
+            //     terrainRenderer.renderShadowMap(shadowPass);
+            //     shadowPass.end();
+            // }
+            
+            // Second pass: Render main scene
             const textureView = gpuContext.context.getCurrentTexture().createView();
             
             const renderPass = commandEncoder.beginRenderPass({
