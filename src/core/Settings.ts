@@ -45,6 +45,7 @@ export class Settings {
         lowColor: [23, 82, 23] as [number, number, number],    // Green
         midColor: [140, 100, 50] as [number, number, number],   // Brown
         highColor: [153, 153, 153] as [number, number, number], // White
+        bottomColor: [40, 30, 20] as [number, number, number],  // Dark brown
         lowThreshold: 0.0,
         highThreshold: 0.35,
         backgroundColor: [135, 206, 235] as [number, number, number], // Sky blue
@@ -123,6 +124,7 @@ export class Settings {
         this.colorFolder.addColor(this.colors, 'lowColor').name('Low Color (Valley)');
         this.colorFolder.addColor(this.colors, 'midColor').name('Mid Color (Slope)');
         this.colorFolder.addColor(this.colors, 'highColor').name('High Color (Peak)');
+        this.colorFolder.addColor(this.colors, 'bottomColor').name('Bottom/Side Color');
         this.colorFolder.add(this.colors, 'lowThreshold', 0.0, 1.0, 0.05).name('Low → Mid Threshold');
         this.colorFolder.add(this.colors, 'highThreshold', 0.0, 1.0, 0.05).name('Mid → High Threshold');
         this.colorFolder.addColor(this.colors, 'backgroundColor').name('Background Color');

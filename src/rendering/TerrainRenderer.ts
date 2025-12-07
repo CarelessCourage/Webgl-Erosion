@@ -40,7 +40,7 @@ export class TerrainRenderer {
         this.indexBuffer = this.createBuffer(geometry.indices, GPUBufferUsage.INDEX);
 
         // Create uniform buffer
-        // Layout: mat4 (64) + mat4 (64) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) = 192 bytes, padded to 256
+        // Layout: mat4 (64) + mat4 (64) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) + vec3 (12) + f32 (4) = 256 bytes
         this.uniformBuffer = gpuContext.device.createBuffer({
             size: 256,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -204,6 +204,7 @@ export class TerrainRenderer {
         lowColor: [number, number, number] = [51, 128, 51],
         midColor: [number, number, number] = [128, 102, 77],
         highColor: [number, number, number] = [230, 230, 230],
+        bottomColor: [number, number, number] = [40, 30, 20],
         lowThreshold: number = 0.3,
         highThreshold: number = 0.6,
         wireframe: boolean = false
@@ -240,8 +241,11 @@ export class TerrainRenderer {
         uniformData[46] = highColor[2];
         uniformData[47] = highThreshold;
         
-        // Wireframe mode (1 float + 3 padding at offset 48)
-        uniformData[48] = wireframe ? 1.0 : 0.0;
+        // Bottom color (3 floats + 1 padding at offset 48)
+        uniformData[48] = bottomColor[0];
+        uniformData[49] = bottomColor[1];
+        uniformData[50] = bottomColor[2];
+        uniformData[51] = wireframe ? 1.0 : 0.0;
         
         this.gpuContext.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
     }

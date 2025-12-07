@@ -215,6 +215,7 @@ async function init() {
                 settings.colors.lowColor,
                 settings.colors.midColor,
                 settings.colors.highColor,
+                settings.colors.bottomColor,
                 settings.colors.lowThreshold,
                 settings.colors.highThreshold,
                 settings.rendering.wireframe

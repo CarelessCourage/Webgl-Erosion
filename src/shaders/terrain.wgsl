@@ -11,8 +11,8 @@ struct Uniforms {
     lowThreshold: f32,
     highColor: vec3f,
     highThreshold: f32,
+    bottomColor: vec3f,
     wireframeMode: f32,            // 0.0 = off, 1.0 = on
-    _padding: f32,
 }
 
 struct VertexInput {
@@ -39,10 +39,10 @@ fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Ve
     let texCoords = vec2i(input.uv * 512.0);
     let height = textureLoad(heightMap, texCoords, 0).r;
     
-    // Only displace vertices on the top surface (Y >= 0)
-    // Bottom and side vertices (Y < 0) remain at their original positions
-    let isTopSurface = input.position.y >= 0.0;
-    let displacement = select(0.0, height * 5.0, isTopSurface && uniforms.disableDisplacement < 0.5);
+    // Displace all vertices at Y >= 0 (top surface and side top edges)
+    // Only bottom vertices (Y < 0) and side bottom edges remain at their original positions
+    let isAtTopHeight = input.position.y >= 0.0;
+    let displacement = select(0.0, height * 5.0, isAtTopHeight && uniforms.disableDisplacement < 0.5);
     
     var worldPos = vec4f(
         input.position.x,
@@ -81,19 +81,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     // Terrain mode with lighting and color gradients
     let lightDir = normalize(vec3f(0.5, 1.0, 0.3));
     let normal = normalize(input.normal);
-    let diffuse = max(dot(normal, lightDir), 0.2);
     
-    // Height-based coloring using height texture value (0-1) instead of world position
-    // This way colors work even in flat view mode
-    var color = uniforms.lowColor / 255.0; // Convert from 0-255 to 0-1
+    // Detect surface type by normal direction:
+    // - Top surface: normal.y close to 1.0
+    // - Bottom surface: normal.y close to -1.0
+    // - Side surfaces: normal.y close to 0.0
+    let isTopSurface = normal.y > 0.5;
     
-    if (height > uniforms.lowThreshold) {
-        let t = (height - uniforms.lowThreshold) / (uniforms.highThreshold - uniforms.lowThreshold);
-        color = mix(uniforms.lowColor / 255.0, uniforms.midColor / 255.0, clamp(t, 0.0, 1.0));
-    }
-    if (height > uniforms.highThreshold) {
-        let t = (height - uniforms.highThreshold) / 0.3;
-        color = mix(uniforms.midColor / 255.0, uniforms.highColor / 255.0, clamp(t, 0.0, 1.0));
+    var color: vec3f;
+    var diffuse: f32;
+    
+    if (isTopSurface) {
+        // Height-based coloring for top surface using height texture value (0-1)
+        color = uniforms.lowColor / 255.0; // Convert from 0-255 to 0-1
+        
+        if (height > uniforms.lowThreshold) {
+            let t = (height - uniforms.lowThreshold) / (uniforms.highThreshold - uniforms.lowThreshold);
+            color = mix(uniforms.lowColor / 255.0, uniforms.midColor / 255.0, clamp(t, 0.0, 1.0));
+        }
+        if (height > uniforms.highThreshold) {
+            let t = (height - uniforms.highThreshold) / 0.3;
+            color = mix(uniforms.midColor / 255.0, uniforms.highColor / 255.0, clamp(t, 0.0, 1.0));
+        }
+        // Top surface gets normal diffuse lighting with low ambient
+        diffuse = max(dot(normal, lightDir), 0.2);
+    } else {
+        // Use solid bottom color for sides and bottom with higher ambient lighting
+        color = uniforms.bottomColor / 255.0;
+        // Sides/bottom get softer lighting with higher ambient (70% base + 30% diffuse)
+        diffuse = max(dot(normal, lightDir), 0.0) * 0.3 + 0.7;
     }
     
     return vec4f(color * diffuse, 1.0);
