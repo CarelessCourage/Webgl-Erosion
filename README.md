@@ -31,6 +31,15 @@
 ![](screenshot/scatter1.PNG)
 
 ## Note : MacOS currently unsupported, Recommended GPU is GTX 1060 and above
+
+**Why macOS doesn't work**: This project requires the `EXT_color_buffer_float` WebGL extension for rendering to floating-point textures, which is used extensively for the hydraulic erosion simulation. macOS (especially Safari and some GPU drivers) has incomplete or buggy support for this extension, causing the simulation to fail silently - the terrain renders but erosion does not update.
+
+**Workaround attempts**:
+- Try using **Chrome** or **Firefox** instead of Safari (may have better extension support)
+- Use an external GPU if available
+- Boot Camp with Windows provides full compatibility
+
+**For developers**: The core issue is in framebuffer operations with `RGBA32F` textures. See console errors for specific framebuffer status failures.
 ## update 12/8/2021 : 
 - Algorithm update/fix : added basic(semi-lagrangian) advection for velocity field generation, you can change magnitude of it under "Erosion Parameters" -> "VelocityAdvectionMag", this means that momentum is possible for water, we can have larger/better scale meandering/delta effects
 ## update 10/1/2021 : 

@@ -1,90 +1,104 @@
-import {vec2, vec3, vec4} from 'gl-matrix';
-import Drawable from '../rendering/gl/Drawable';
-import {gl} from '../globals';
+import { vec2, vec3 } from 'gl-matrix';
 
-class Plane extends Drawable {
-  indices: Uint32Array;
-  positions: Float32Array;
-  normals: Float32Array;
-  uvs: Float32Array;
-  center: vec3;
-  scale: vec2;
-  subdivs: number; // 2^subdivs is how many squares will compose the plane; must be even.
+export interface PlaneGeometry {
+    positions: Float32Array;
+    normals: Float32Array;
+    uvs: Float32Array;
+    indices: Uint32Array;
+    vertexCount: number;
+    indexCount: number;
+}
 
-  constructor(center: vec3, scale: vec2, subdivs: number) {
-    super(); // Call the constructor of the super class. This is required.
-    this.center = vec3.fromValues(center[0], center[1], center[2]);
-    this.scale = scale;
-    this.subdivs = subdivs + subdivs % 2; // Ensures the number is even, rounds up.
-  }
-
-  create() {
-
-    let width: number = Math.pow(2, this.subdivs / 2);
-    let normalize: number = 1.0 / width;
-    this.positions = new Float32Array((width + 1) * (width + 1) * 4);
-    this.normals = new Float32Array((width + 1) * (width + 1) * 4);
-    this.uvs = new Float32Array((width + 1) * (width + 1) * 2);
-    this.indices = new Uint32Array(width * width * 6); // NxN squares, each square is two triangles, each triangle is three indices
-
+/**
+ * Creates a subdivided plane geometry for terrain
+ * @param center Center position of the plane
+ * @param scale Size of the plane in X and Z
+ * @param subdivs Subdivision level (2^subdivs squares)
+ */
+export function createPlane(
+    center: vec3,
+    scale: vec2,
+    subdivs: number
+): PlaneGeometry {
+    // Ensure subdivs is even
+    subdivs = subdivs + (subdivs % 2);
+    
+    const width = Math.pow(2, subdivs / 2);
+    const normalize = 1.0 / width;
+    
+    // Allocate arrays
+    const positions = new Float32Array((width + 1) * (width + 1) * 4);
+    const normals = new Float32Array((width + 1) * (width + 1) * 4);
+    const uvs = new Float32Array((width + 1) * (width + 1) * 2);
+    const indices = new Uint32Array(width * width * 6);
+    
+    // Generate vertex positions and normals
     let posIdx = 0;
-    for(let x = 0; x <= width; ++x) {
-      for(let z = 0; z <= width; ++z) {
-        // Make a strip of vertices along Z with the current X coord
-        this.normals[posIdx] = 0;
-        this.positions[posIdx++] = x * normalize * this.scale[0] + this.center[0] - this.scale[0] * 0.5;
-        this.normals[posIdx] = 1;
-        this.positions[posIdx++] = 0 + this.center[1];
-        this.normals[posIdx] = 0;
-        this.positions[posIdx++] = z * normalize * this.scale[1] + this.center[2] - this.scale[1] * 0.5;
-        this.normals[posIdx] = 0;
-        this.positions[posIdx++] = 1;
-      }
-    }
-
-    let uvIdx = 0;
-    for(let x = 0; x <= width; ++x) {
-        for(let z = 0; z <= width; ++z) {
-            // Make a strip of vertices along Z with the current X coord
-            this.uvs[uvIdx++] = x * normalize;
-            this.uvs[uvIdx++] = z * normalize;
+    for (let x = 0; x <= width; ++x) {
+        for (let z = 0; z <= width; ++z) {
+            // Normal (pointing up)
+            normals[posIdx] = 0;
+            // Position X
+            positions[posIdx++] = x * normalize * scale[0] + center[0] - scale[0] * 0.5;
+            
+            // Normal Y
+            normals[posIdx] = 1;
+            // Position Y
+            positions[posIdx++] = 0 + center[1];
+            
+            // Normal Z
+            normals[posIdx] = 0;
+            // Position Z
+            positions[posIdx++] = z * normalize * scale[1] + center[2] - scale[1] * 0.5;
+            
+            // Normal W
+            normals[posIdx] = 0;
+            // Position W
+            positions[posIdx++] = 1;
         }
     }
-
-    let indexIdx = 0;
-    // Make the squares out of indices
-    for(let i = 0; i < width; ++i) { // X iter
-      for(let j = 0; j < width; ++j) { // Z iter
-        this.indices[indexIdx++] = j + i * (width + 1);
-        this.indices[indexIdx++] = j + 1 + i * (width + 1);
-        this.indices[indexIdx++] = j + (i + 1) * (width + 1);
-
-        this.indices[indexIdx++] = j + 1 + i * (width + 1);
-        this.indices[indexIdx++] = j + (i + 1) * (width + 1);
-        this.indices[indexIdx++] = j + 1 + (i + 1) * (width + 1);
-      }
+    
+    // Generate UVs
+    let uvIdx = 0;
+    for (let x = 0; x <= width; ++x) {
+        for (let z = 0; z <= width; ++z) {
+            uvs[uvIdx++] = x * normalize;
+            uvs[uvIdx++] = z * normalize;
+        }
     }
-
-    this.generateUv()
-    this.generateIdx();
-    this.generatePos();
-    this.generateNor();
-
-    this.count = this.indices.length;
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.bufIdx);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.indices, gl.STATIC_DRAW);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.bufNor);
-    gl.bufferData(gl.ARRAY_BUFFER, this.normals, gl.STATIC_DRAW);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.bufPos);
-    gl.bufferData(gl.ARRAY_BUFFER, this.positions, gl.STATIC_DRAW);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER,this.bufUv);
-    gl.bufferData(gl.ARRAY_BUFFER,this.uvs,gl.STATIC_DRAW);
-
-    console.log(`Created plane`);
-  }
-};
-
-export default Plane;
+    
+    // Generate indices (two triangles per quad)
+    let indexIdx = 0;
+    for (let i = 0; i < width; ++i) {
+        for (let j = 0; j < width; ++j) {
+            const topLeft = j + i * (width + 1);
+            const topRight = j + 1 + i * (width + 1);
+            const bottomLeft = j + (i + 1) * (width + 1);
+            const bottomRight = j + 1 + (i + 1) * (width + 1);
+            
+            // First triangle
+            indices[indexIdx++] = topLeft;
+            indices[indexIdx++] = topRight;
+            indices[indexIdx++] = bottomLeft;
+            
+            // Second triangle
+            indices[indexIdx++] = topRight;
+            indices[indexIdx++] = bottomLeft;
+            indices[indexIdx++] = bottomRight;
+        }
+    }
+    
+    console.log(`Created plane: ${width + 1}x${width + 1} vertices, ${indices.length / 3} triangles`);
+    console.log('First vertex:', positions[0], positions[1], positions[2], positions[3]);
+    console.log('Last vertex:', positions[positions.length - 4], positions[positions.length - 3], positions[positions.length - 2], positions[positions.length - 1]);
+    console.log('First triangle indices:', indices[0], indices[1], indices[2]);
+    
+    return {
+        positions,
+        normals,
+        uvs,
+        indices,
+        vertexCount: (width + 1) * (width + 1),
+        indexCount: indices.length,
+    };
+}

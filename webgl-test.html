@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebGL Float Texture Support Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .test-result {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .pass {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .fail {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .warn {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+        h1 {
+            color: #333;
+        }
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        #conclusion {
+            margin-top: 30px;
+            padding: 15px;
+            border: 2px solid #333;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebGL 2.0 Float Texture Rendering Test</h1>
+    <p>This test checks if your browser/GPU supports the features required for the WebGL Erosion project.</p>
+    
+    <div id="results"></div>
+    <div id="conclusion"></div>
+
+    <h2>Browser Info</h2>
+    <pre id="browserInfo"></pre>
+
+    <script>
+        const results = document.getElementById('results');
+        const conclusion = document.getElementById('conclusion');
+        const browserInfo = document.getElementById('browserInfo');
+
+        function addResult(title, passed, message) {
+            const div = document.createElement('div');
+            div.className = `test-result ${passed ? 'pass' : 'fail'}`;
+            div.innerHTML = `<strong>${passed ? '✓' : '✗'} ${title}</strong><br>${message}`;
+            results.appendChild(div);
+            return passed;
+        }
+
+        function addWarning(title, message) {
+            const div = document.createElement('div');
+            div.className = 'test-result warn';
+            div.innerHTML = `<strong>⚠ ${title}</strong><br>${message}`;
+            results.appendChild(div);
+        }
+
+        // Display browser info
+        browserInfo.textContent = navigator.userAgent;
+
+        // Run tests
+        let allPassed = true;
+
+        // Test 1: WebGL 2.0 support
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl2');
+        
+        if (!gl) {
+            addResult('WebGL 2.0', false, 'WebGL 2.0 is not supported. This project requires WebGL 2.0.');
+            allPassed = false;
+            conclusion.className = 'test-result fail';
+            conclusion.innerHTML = '<strong>❌ INCOMPATIBLE</strong><br>Your browser does not support WebGL 2.0. The erosion simulation will not work.';
+        } else {
+            addResult('WebGL 2.0', true, 'WebGL 2.0 is supported.');
+
+            // Test 2: Get renderer info
+            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            if (debugInfo) {
+                const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+                const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+                addWarning('GPU Info', `Vendor: ${vendor}<br>Renderer: ${renderer}`);
+            }
+
+            // Test 3: Required extensions
+            const extensions = {
+                'OES_texture_float': false,
+                'OES_texture_float_linear': false,
+                'EXT_color_buffer_float': false
+            };
+
+            for (let extName in extensions) {
+                const ext = gl.getExtension(extName);
+                extensions[extName] = ext !== null;
+                const critical = extName === 'OES_texture_float' || extName === 'EXT_color_buffer_float';
+                if (ext) {
+                    addResult(extName, true, `Extension is supported.`);
+                } else {
+                    addResult(extName, false, `Extension is NOT supported. ${critical ? 'This is CRITICAL for the simulation.' : 'This may affect performance.'}`);
+                    if (critical) allPassed = false;
+                }
+            }
+
+            // Test 4: Float texture creation
+            let floatTextureWorks = false;
+            try {
+                const testTex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, testTex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 256, 256, 0, gl.RGBA, gl.FLOAT, null);
+                
+                const error = gl.getError();
+                if (error === gl.NO_ERROR) {
+                    floatTextureWorks = true;
+                    addResult('Float Texture Creation', true, 'Successfully created a RGBA32F texture.');
+                } else {
+                    addResult('Float Texture Creation', false, `Failed to create float texture. Error code: ${error}`);
+                    allPassed = false;
+                }
+                gl.deleteTexture(testTex);
+            } catch(e) {
+                addResult('Float Texture Creation', false, `Exception: ${e.message}`);
+                allPassed = false;
+            }
+
+            // Test 5: Framebuffer with float texture
+            if (floatTextureWorks) {
+                try {
+                    const fb = gl.createFramebuffer();
+                    const tex = gl.createTexture();
+                    
+                    gl.bindTexture(gl.TEXTURE_2D, tex);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 256, 256, 0, gl.RGBA, gl.FLOAT, null);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                    
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+                    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+                    
+                    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                    
+                    if (status === gl.FRAMEBUFFER_COMPLETE) {
+                        addResult('Framebuffer with Float Texture', true, 'Framebuffer is complete. This is the most important test!');
+                    } else {
+                        let statusName = 'UNKNOWN';
+                        switch(status) {
+                            case gl.FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
+                                statusName = 'FRAMEBUFFER_INCOMPLETE_ATTACHMENT';
+                                break;
+                            case gl.FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
+                                statusName = 'FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT';
+                                break;
+                            case gl.FRAMEBUFFER_UNSUPPORTED:
+                                statusName = 'FRAMEBUFFER_UNSUPPORTED';
+                                break;
+                            case gl.FRAMEBUFFER_INCOMPLETE_MULTISAMPLE:
+                                statusName = 'FRAMEBUFFER_INCOMPLETE_MULTISAMPLE';
+                                break;
+                        }
+                        addResult('Framebuffer with Float Texture', false, 
+                            `Framebuffer is NOT complete. Status: ${statusName} (${status}). ` +
+                            `This means rendering to float textures does not work on your system. THE SIMULATION WILL NOT WORK.`);
+                        allPassed = false;
+                    }
+                    
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    gl.deleteFramebuffer(fb);
+                    gl.deleteTexture(tex);
+                } catch(e) {
+                    addResult('Framebuffer with Float Texture', false, `Exception: ${e.message}`);
+                    allPassed = false;
+                }
+            }
+
+            // Final conclusion
+            if (allPassed) {
+                conclusion.className = 'test-result pass';
+                conclusion.innerHTML = '<strong>✓ COMPATIBLE</strong><br>Your browser and GPU support all required features. The WebGL Erosion simulation should work!';
+            } else {
+                conclusion.className = 'test-result fail';
+                conclusion.innerHTML = '<strong>❌ INCOMPATIBLE</strong><br>Your browser/GPU does not support all required features. ' +
+                    'The erosion simulation will not work properly.<br><br>' +
+                    '<strong>On macOS:</strong> This is a known limitation. Try:<br>' +
+                    '• Using Chrome or Firefox instead of Safari<br>' +
+                    '• Using Windows via Boot Camp<br>' +
+                    '• Using a different computer with better WebGL support';
+            }
+        }
+    </script>
+</body>
+</html>
