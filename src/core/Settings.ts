@@ -46,13 +46,13 @@ export class Settings {
 
     // Color settings
     public colors = {
-        lowColor: [23, 82, 23] as [number, number, number],    // Green
-        midColor: [140, 100, 50] as [number, number, number],   // Brown
-        highColor: [153, 153, 153] as [number, number, number], // White
-        bottomColor: [40, 30, 20] as [number, number, number],  // Dark brown
+        lowColor: "#177517",      // Green (23, 82, 23)
+        midColor: "#8c6432",      // Brown (140, 100, 50) 
+        highColor: "#999999",     // Light gray (153, 153, 153)
+        bottomColor: "#281e14",   // Dark brown (40, 30, 20)
         lowThreshold: 0.0,
         highThreshold: 0.35,
-        backgroundColor: [135, 206, 235] as [number, number, number], // Sky blue
+        backgroundColor: "#87ceeb", // Sky blue (135, 206, 235)
     };
     
     // Lighting settings

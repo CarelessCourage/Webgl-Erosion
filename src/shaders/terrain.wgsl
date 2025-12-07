@@ -299,16 +299,32 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     var diffuse: f32;
     
     if (isTopSurface) {
-        // Height-based coloring for top surface using height texture value (0-1)
-        color = uniforms.lowColor / 255.0; // Convert from 0-255 to 0-1
+        // Height-based coloring for top surface
+        // Normalize colors - handle both 0-1 and 0-255 ranges
+        var normalizedLowColor = uniforms.lowColor;
+        var normalizedMidColor = uniforms.midColor;
+        var normalizedHighColor = uniforms.highColor;
+        
+        // If any component > 1.0, assume 0-255 range and convert
+        if (uniforms.lowColor.x > 1.0 || uniforms.lowColor.y > 1.0 || uniforms.lowColor.z > 1.0) {
+            normalizedLowColor = uniforms.lowColor / 255.0;
+        }
+        if (uniforms.midColor.x > 1.0 || uniforms.midColor.y > 1.0 || uniforms.midColor.z > 1.0) {
+            normalizedMidColor = uniforms.midColor / 255.0;
+        }
+        if (uniforms.highColor.x > 1.0 || uniforms.highColor.y > 1.0 || uniforms.highColor.z > 1.0) {
+            normalizedHighColor = uniforms.highColor / 255.0;
+        }
+        
+        color = normalizedLowColor;
         
         if (height > uniforms.lowThreshold) {
             let t = (height - uniforms.lowThreshold) / (uniforms.highThreshold - uniforms.lowThreshold);
-            color = mix(uniforms.lowColor / 255.0, uniforms.midColor / 255.0, clamp(t, 0.0, 1.0));
+            color = mix(normalizedLowColor, normalizedMidColor, clamp(t, 0.0, 1.0));
         }
         if (height > uniforms.highThreshold) {
             let t = (height - uniforms.highThreshold) / 0.3;
-            color = mix(uniforms.midColor / 255.0, uniforms.highColor / 255.0, clamp(t, 0.0, 1.0));
+            color = mix(normalizedMidColor, normalizedHighColor, clamp(t, 0.0, 1.0));
         }
         // Top surface gets normal diffuse lighting with ambient control
         // Use shadowIntensity to control ambient light (0 = bright, 1 = dark ambient)
@@ -325,7 +341,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
         }
     } else {
         // Use solid bottom color for sides and bottom with higher ambient lighting
-        color = uniforms.bottomColor / 255.0;
+        var normalizedBottomColor = uniforms.bottomColor;
+        if (uniforms.bottomColor.x > 1.0 || uniforms.bottomColor.y > 1.0 || uniforms.bottomColor.z > 1.0) {
+            normalizedBottomColor = uniforms.bottomColor / 255.0;
+        }
+        color = normalizedBottomColor;
         // Sides/bottom get softer lighting with higher ambient (70% base + 30% diffuse)
         diffuse = max(dot(normal, lightDir), 0.0) * 0.3 + 0.7;
     }

@@ -6,6 +6,18 @@ import { createPlane } from './geometry/Plane';
 import { TerrainRenderer } from './rendering/TerrainRenderer';
 
 /**
+ * Convert hex color string to RGB array
+ */
+function hexToRgb(hex: string): [number, number, number] {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? [
+        parseInt(result[1], 16),
+        parseInt(result[2], 16),
+        parseInt(result[3], 16)
+    ] : [0, 0, 0];
+}
+
+/**
  * Main entry point for WebGPU Terrain Erosion
  */
 
@@ -249,10 +261,10 @@ async function init() {
                 camera.position,
                 settings.visualization.mode,
                 settings.visualization.disableDisplacement,
-                settings.colors.lowColor,
-                settings.colors.midColor,
-                settings.colors.highColor,
-                settings.colors.bottomColor,
+                hexToRgb(settings.colors.lowColor),
+                hexToRgb(settings.colors.midColor),
+                hexToRgb(settings.colors.highColor),
+                hexToRgb(settings.colors.bottomColor),
                 settings.colors.lowThreshold,
                 settings.colors.highThreshold,
                 settings.lighting.shadowsEnabled,
@@ -286,9 +298,9 @@ async function init() {
                 colorAttachments: [{
                     view: textureView,
                     clearValue: { 
-                        r: settings.colors.backgroundColor[0] / 255, 
-                        g: settings.colors.backgroundColor[1] / 255, 
-                        b: settings.colors.backgroundColor[2] / 255, 
+                        r: hexToRgb(settings.colors.backgroundColor)[0] / 255, 
+                        g: hexToRgb(settings.colors.backgroundColor)[1] / 255, 
+                        b: hexToRgb(settings.colors.backgroundColor)[2] / 255, 
                         a: 1.0 
                     },
                     loadOp: 'clear',
