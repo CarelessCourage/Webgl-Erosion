@@ -60,7 +60,7 @@ export class TerrainRenderer {
 
         // Create layer buffer for vertex shader
         this.layerBuffer = gpuContext.device.createBuffer({
-            size: 5 * 32 * 4, // 5 layers * 32 floats * 4 bytes
+            size: 5 * 18 * 4, // 5 layers * 18 floats * 4 bytes (matching WGSL struct size)
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
 
@@ -297,13 +297,23 @@ export class TerrainRenderer {
      */
     private updateLayerBuffer(layerStack: LayerStack): void {
         const layers = layerStack.getAllLayers();
-        const data = new Float32Array(5 * 32); // 5 layers * 32 floats
+        const data = new Float32Array(5 * 18); // 5 layers * 18 floats (matching WGSL struct)
+        
+        console.log('Updating layer buffer with', layers.length, 'layers:');
         
         for (let i = 0; i < Math.min(layers.length, 5); i++) {
             const layer = layers[i];
-            const offset = i * 32;
+            const offset = i * 18; // 18 floats per layer
             
-            // Serialize layer data to match WGSL struct
+            console.log(`Layer ${i}:`, {
+                name: layer.name,
+                type: layer.type,
+                enabled: layer.enabled,
+                strength: layer.strength,
+                blendMode: layer.blendMode
+            });
+            
+            // Serialize layer data to match WGSL struct (18 floats)
             data[offset + 0] = layer.type === 'noise' ? 0.0 : layer.type === 'circle' ? 1.0 : 2.0; // layerType
             data[offset + 1] = layer.blendMode === 'add' ? 0.0 : layer.blendMode === 'mask' ? 1.0 : 
                               layer.blendMode === 'multiply' ? 2.0 : 3.0; // blendMode
@@ -312,19 +322,35 @@ export class TerrainRenderer {
             
             if (layer.type === 'noise') {
                 const noiseLayer = layer as any;
-                data[offset + 4] = noiseLayer.scale || 4.0; // scale
+                data[offset + 4] = noiseLayer.scale || 8.0; // scale
                 data[offset + 5] = noiseLayer.octaves || 4.0; // octaves
                 data[offset + 6] = noiseLayer.persistence || 0.5; // persistence
                 data[offset + 7] = noiseLayer.lacunarity || 2.0; // lacunarity
-                data[offset + 8] = noiseLayer.amplitude || 0.5; // amplitude
+                data[offset + 8] = noiseLayer.amplitude || 1.0; // amplitude
                 data[offset + 9] = noiseLayer.seed || 12345; // seed
+                data[offset + 10] = 0.0; // centerX (unused for noise)
+                data[offset + 11] = 0.0; // centerY (unused for noise)
+                data[offset + 12] = 0.0; // radius (unused for noise)
+                data[offset + 13] = 0.0; // falloff (unused for noise)
+                data[offset + 14] = 0.0; // offsetX (unused for noise)
+                data[offset + 15] = 0.0; // offsetY (unused for noise)
             } else if (layer.type === 'circle') {
                 const circleLayer = layer as any;
+                data[offset + 4] = 0.0; // scale (unused for circle)
+                data[offset + 5] = 0.0; // octaves (unused for circle)
+                data[offset + 6] = 0.0; // persistence (unused for circle)
+                data[offset + 7] = 0.0; // lacunarity (unused for circle)
+                data[offset + 8] = 0.0; // amplitude (unused for circle)
+                data[offset + 9] = 0.0; // seed (unused for circle)
                 data[offset + 10] = circleLayer.centerX || 0.0; // centerX
                 data[offset + 11] = circleLayer.centerY || 0.0; // centerY
                 data[offset + 12] = circleLayer.radius || 1.0; // radius
                 data[offset + 13] = circleLayer.falloff || 0.5; // falloff
+                data[offset + 14] = 0.0; // offsetX (unused for circle)
+                data[offset + 15] = 0.0; // offsetY (unused for circle)
             }
+            data[offset + 16] = 0.0; // imageIndex (unused)
+            data[offset + 17] = 0.0; // padding
         }
         
         this.gpuContext.device.queue.writeBuffer(this.layerBuffer, 0, data);

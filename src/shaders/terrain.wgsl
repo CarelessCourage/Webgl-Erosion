@@ -172,11 +172,11 @@ fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
         case 0: { // Add
             return clamp(base + weightedOverlay, 0.0, 1.0);
         }
-        case 1: { // Mask
-            return base * weightedOverlay;
+        case 1: { // Mask - overlay controls visibility of base
+            return base * clamp(weightedOverlay, 0.0, 1.0);
         }
-        case 2: { // Multiply
-            return base * (1.0 + weightedOverlay);
+        case 2: { // Multiply - base and overlay multiply together
+            return clamp(base * overlay * strength, 0.0, 1.0);
         }
         case 3: { // Subtract
             return clamp(base - weightedOverlay, 0.0, 1.0);
@@ -191,15 +191,18 @@ fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
 fn calculateHeight(uv: vec2f) -> f32 {
     var result = 0.0;
     let layerCount = arrayLength(&layers);
+    var processedLayers = 0u;
     
     // Process each layer in order
-    for (var i = 0u; i < layerCount; i++) {
+    for (var i = 0u; i < layerCount && i < 5u; i++) {
         let layer = layers[i];
         
         // Skip disabled layers
         if (layer.enabled < 0.5) {
             continue;
         }
+        
+        processedLayers += 1u;
         
         var layerValue = 0.0;
         let layerTypeInt = i32(layer.layerType);
@@ -218,7 +221,7 @@ fn calculateHeight(uv: vec2f) -> f32 {
         }
         
         // Blend with accumulated result
-        if (i == 0u) {
+        if (processedLayers == 1u) {
             // First layer is the base
             result = layerValue * layer.strength;
         } else {
