@@ -15,8 +15,8 @@
         "vite": "^5.0.0"
     },
     "dependencies": {
-        "dat.gui": "^0.7.9",
         "gl-matrix": "^3.4.3",
+        "lil-gui": "^0.21.0",
         "stats-js": "^1.0.1"
     }
 }

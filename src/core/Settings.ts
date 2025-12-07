@@ -1,11 +1,15 @@
-import * as dat from 'dat.gui';
+import { GUI } from 'lil-gui';
 import { OrbitCamera } from './Camera';
+import { LayerStack } from './LayerSystem';
 
 /**
- * Application settings with dat.gui control panel
+ * Application settings with lil-gui control panel
  */
 export class Settings {
-    // Terrain generation settings
+    // Layer system for terrain generation
+    public layerStack: LayerStack;
+    
+    // Legacy terrain settings (will be removed after migration)
     public terrain = {
         seed: 12345,
         scale: 4.0,
@@ -62,14 +66,15 @@ export class Settings {
         },
     };
 
-    private gui: dat.GUI;
+    private gui: GUI;
     private onRegenerateCallback?: () => void;
-    private colorFolder?: dat.GUI;
+    private colorFolder?: GUI;
     private cameraInstance?: OrbitCamera;
 
     constructor(camera?: OrbitCamera) {
         this.cameraInstance = camera;
-        this.gui = new dat.GUI();
+        this.layerStack = new LayerStack();
+        this.gui = new GUI({ title: 'Terrain Controls', width: 300 });
         this.setupGUI();
     }
 

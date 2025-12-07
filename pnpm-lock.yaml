@@ -8,12 +8,12 @@ importers:
 
   .:
     dependencies:
-      dat.gui:
-        specifier: ^0.7.9
-        version: 0.7.9
       gl-matrix:
         specifier: ^3.4.3
         version: 3.4.4
+      lil-gui:
+        specifier: ^0.21.0
+        version: 0.21.0
       stats-js:
         specifier: ^1.0.1
         version: 1.0.1
@@ -284,9 +284,6 @@ packages:
   '@webgpu/types@0.1.67':
     resolution: {integrity: sha512-uk53+2ECGUkWoDFez/hymwpRfdgdIn6y1ref70fEecGMe5607f4sozNFgBk0oxlr7j2CRGWBEc3IBYMmFdGGTQ==}
 
-  dat.gui@0.7.9:
-    resolution: {integrity: sha512-sCNc1OHobc+Erc1HqiswYgHdVNpSJUlk/Hz8vzOCsER7rl+oF/4+v8GXFUyCgtXpoCX6+bnmg07DedLvBLwYKQ==}
-
   esbuild@0.21.5:
     resolution: {integrity: sha512-mg3OPMV4hXywwpoDxu3Qda5xCKQi+vCTZq8S9J/EpkhB2HzKXq4SNFZE3+NK93JYxc8VMSep+lOUSC/RVKaBqw==}
     engines: {node: '>=12'}
@@ -299,6 +296,9 @@ packages:
 
   gl-matrix@3.4.4:
     resolution: {integrity: sha512-latSnyDNt/8zYUB6VIJ6PCh2jBjJX6gnDsoCZ7LyW7GkqrD51EWwa9qCoGixj8YqBtETQK/xY7OmpTF8xz1DdQ==}
+
+  lil-gui@0.21.0:
+    resolution: {integrity: sha512-tpvxN7v1GvE/Tv+GRopfOp0W7fVEjF4PltkuX8vOCIfim22rD1ztvfkoEMcv9lzQeuNUSeIrUmUjBwmlW/oUew==}
 
   nanoid@3.3.11:
     resolution: {integrity: sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==}
@@ -501,8 +501,6 @@ snapshots:
 
   '@webgpu/types@0.1.67': {}
 
-  dat.gui@0.7.9: {}
-
   esbuild@0.21.5:
     optionalDependencies:
       '@esbuild/aix-ppc64': 0.21.5
@@ -533,6 +531,8 @@ snapshots:
     optional: true
 
   gl-matrix@3.4.4: {}
+
+  lil-gui@0.21.0: {}
 
   nanoid@3.3.11: {}
 
