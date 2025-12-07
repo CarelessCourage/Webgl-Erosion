@@ -32,7 +32,7 @@ struct Layer {
 
 // Compute shader bindings
 @group(0) @binding(0) var<storage, read> layers: array<Layer>;
-@group(0) @binding(1) var outputTexture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var outputTexture: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var imageTextures: texture_2d_array<f32>; 
 @group(0) @binding(3) var imageSampler: sampler;
 

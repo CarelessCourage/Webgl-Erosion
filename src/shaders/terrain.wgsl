@@ -56,6 +56,7 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> layers: array<Layer>;
+@group(0) @binding(2) var heightTexture: texture_2d<f32>;
 
 // High quality hash function for procedural noise
 fn hash22(p: vec2f) -> vec2f {
@@ -236,8 +237,16 @@ fn calculateHeight(uv: vec2f) -> f32 {
 fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     var output: VertexOutput;
     
-    // Calculate height procedurally from layers
-    let height = calculateHeight(input.uv);
+    // Calculate base height procedurally from layers
+    let proceduralHeight = calculateHeight(input.uv);
+    
+    // Sample height texture from erosion simulation using textureLoad (vertex shader compatible)
+    let textureSize = textureDimensions(heightTexture);
+    let texelCoord = vec2<i32>(input.uv * vec2<f32>(textureSize));
+    let textureHeight = textureLoad(heightTexture, texelCoord, 0).r;
+    
+    // Blend procedural and texture height (texture takes priority for erosion effects)
+    let height = mix(proceduralHeight, textureHeight, 0.8);
     
     // Displace all vertices at Y >= 0 (top surface and side top edges)
     // Only bottom vertices (Y < 0) and side bottom edges remain at their original positions
@@ -272,12 +281,32 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
         return vec4f(gray, 1.0);
     }
     
-    // Calculate proper normal from procedural heights for accurate lighting
+    // Calculate proper normal from combined heights (procedural + texture) for accurate lighting
     let texelSize = 1.0 / 512.0;
-    let heightL = calculateHeight(input.uv + vec2f(-texelSize, 0.0));
-    let heightR = calculateHeight(input.uv + vec2f(texelSize, 0.0));
-    let heightD = calculateHeight(input.uv + vec2f(0.0, -texelSize));
-    let heightU = calculateHeight(input.uv + vec2f(0.0, texelSize));
+    
+    // Sample heights from both procedural and texture sources for normals
+    let proceduralL = calculateHeight(input.uv + vec2f(-texelSize, 0.0));
+    let proceduralR = calculateHeight(input.uv + vec2f(texelSize, 0.0));
+    let proceduralD = calculateHeight(input.uv + vec2f(0.0, -texelSize));
+    let proceduralU = calculateHeight(input.uv + vec2f(0.0, texelSize));
+    
+    // Sample height texture using textureLoad (convert UV to texel coordinates)
+    let textureSize = textureDimensions(heightTexture);
+    let texelL = vec2<i32>((input.uv + vec2f(-texelSize, 0.0)) * vec2<f32>(textureSize));
+    let texelR = vec2<i32>((input.uv + vec2f(texelSize, 0.0)) * vec2<f32>(textureSize));
+    let texelD = vec2<i32>((input.uv + vec2f(0.0, -texelSize)) * vec2<f32>(textureSize));
+    let texelU = vec2<i32>((input.uv + vec2f(0.0, texelSize)) * vec2<f32>(textureSize));
+    
+    let textureL = textureLoad(heightTexture, texelL, 0).r;
+    let textureR = textureLoad(heightTexture, texelR, 0).r;
+    let textureD = textureLoad(heightTexture, texelD, 0).r;
+    let textureU = textureLoad(heightTexture, texelU, 0).r;
+    
+    // Blend procedural and texture heights for normal calculation
+    let heightL = mix(proceduralL, textureL, 0.8);
+    let heightR = mix(proceduralR, textureR, 0.8);
+    let heightD = mix(proceduralD, textureD, 0.8);
+    let heightU = mix(proceduralU, textureU, 0.8);
     
     // Calculate tangent vectors scaled by displacement
     let scale = 5.0; // Match displacement scale
