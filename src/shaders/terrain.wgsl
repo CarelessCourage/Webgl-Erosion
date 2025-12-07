@@ -39,11 +39,14 @@ fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Ve
     let texCoords = vec2i(input.uv * 512.0);
     let height = textureLoad(heightMap, texCoords, 0).r;
     
-    // Displace vertex by height (unless disabled)
-    let displacement = select(height * 5.0, 0.0, uniforms.disableDisplacement > 0.5);
+    // Only displace vertices on the top surface (Y >= 0)
+    // Bottom and side vertices (Y < 0) remain at their original positions
+    let isTopSurface = input.position.y >= 0.0;
+    let displacement = select(0.0, height * 5.0, isTopSurface && uniforms.disableDisplacement < 0.5);
+    
     var worldPos = vec4f(
         input.position.x,
-        displacement,
+        input.position.y + displacement,
         input.position.z,
         1.0
     );
