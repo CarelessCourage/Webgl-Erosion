@@ -127,11 +127,6 @@ export class Settings {
         this.colorFolder.add(this.colors, 'highThreshold', 0.0, 1.0, 0.05).name('Mid → High Threshold');
         this.colorFolder.addColor(this.colors, 'backgroundColor').name('Background Color');
         this.updateColorFolderVisibility();
-
-        // Rendering folder
-        const renderingFolder = this.gui.addFolder('Rendering');
-        // renderingFolder.add(this.rendering, 'wireframe').name('Wireframe (TODO)');
-        renderingFolder.add(this.rendering, 'showNormals').name('Show Normals (TODO)');
     }
 
     public onRegenerate(callback: () => void): void {
