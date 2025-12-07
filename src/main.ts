@@ -89,7 +89,7 @@ async function init() {
         const planeGeometry = createPlane(
             vec3.fromValues(0, 0, 0),  // center
             [10, 10],                   // scale
-            8                           // subdivisions (2^(8/2) = 16x16 grid)
+            10                          // subdivisions (2^(10/2) = 32x32 grid = 1024 vertices)
         );
         
         console.log('Plane bounds:', {
@@ -107,7 +107,7 @@ async function init() {
         
         let currentMeshResolution = settings.terrain.meshResolution;
         
-        settings.onRegenerate(() => {
+        settings.onRegenerate(async () => {
             // Check if mesh resolution changed
             if (settings.terrain.meshResolution !== currentMeshResolution) {
                 currentMeshResolution = settings.terrain.meshResolution;
@@ -124,28 +124,23 @@ async function init() {
                 terrainRenderer.updateGeometry(newGeometry);
             }
             
-            // Always regenerate terrain with current settings
-            terrainRenderer.generateTerrain(
-                settings.terrain.seed,
-                settings.terrain.scale,
-                settings.terrain.octaves,
-                settings.terrain.persistence,
-                settings.terrain.lacunarity,
-                settings.terrain.amplitude,
-                settings.terrain.baseHeight
-            );
+            // Generate terrain using layer system
+            await terrainRenderer.generateTerrainFromLayers(settings.layerStack);
+        });
+
+        // Handle image uploads for image layers
+        let imageLayerIndex = 0;
+        settings.onImageUpload((imageData: ImageData, layerId: string) => {
+            terrainRenderer.uploadImageForLayer(imageData, imageLayerIndex);
+            // Update the layer to reference the correct texture array index
+            settings.layerStack.updateLayer(layerId, { imageIndex: imageLayerIndex } as any);
+            imageLayerIndex = (imageLayerIndex + 1) % 4; // Cycle through available slots
         });
         
-        // Generate initial terrain with settings
-        terrainRenderer.generateTerrain(
-            settings.terrain.seed,
-            settings.terrain.scale,
-            settings.terrain.octaves,
-            settings.terrain.persistence,
-            settings.terrain.lacunarity,
-            settings.terrain.amplitude,
-            settings.terrain.baseHeight
-        );
+        // Generate initial terrain using layer system
+        console.log('Generating initial terrain...');
+        await terrainRenderer.generateTerrainFromLayers(settings.layerStack);
+        console.log('✓ Initial terrain generated from layers');
         
         // Create depth texture
         let depthTexture = gpuContext.device.createTexture({
@@ -156,7 +151,7 @@ async function init() {
         
         // Handle window resize
         const originalResize = resizeCanvas;
-        resizeCanvas = () => {
+        const handleResize = () => {
             originalResize();
             // Recreate depth texture on resize
             depthTexture.destroy();
@@ -167,6 +162,10 @@ async function init() {
             });
             camera.setAspectRatio(canvas.width / canvas.height);
         };
+        
+        // Replace the resize event listener
+        window.removeEventListener('resize', resizeCanvas);
+        window.addEventListener('resize', handleResize);
         
         console.log('✓ Terrain initialized, starting render loop');
         

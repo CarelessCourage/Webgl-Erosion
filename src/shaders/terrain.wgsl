@@ -18,6 +18,28 @@ struct Uniforms {
     shadowIntensity: f32,          // 0.0 to 1.0
 }
 
+// Layer data structure (matching LayerCompute)
+struct Layer {
+    layerType: f32,        // 0=noise, 1=circle, 2=image
+    blendMode: f32,        // 0=add, 1=mask, 2=multiply, 3=subtract
+    enabled: f32,          // 0.0=disabled, 1.0=enabled
+    strength: f32,         // 0.0 to 1.0
+    scale: f32,
+    octaves: f32,
+    persistence: f32,
+    lacunarity: f32,
+    amplitude: f32,
+    seed: f32,
+    centerX: f32,
+    centerY: f32,
+    radius: f32,
+    falloff: f32,
+    offsetX: f32,
+    offsetY: f32,
+    imageIndex: f32,
+    padding: f32,
+}
+
 struct VertexInput {
     @location(0) position: vec4f,
     @location(1) normal: vec4f,
@@ -29,18 +51,190 @@ struct VertexOutput {
     @location(0) worldPos: vec3f,
     @location(1) normal: vec3f,
     @location(2) uv: vec2f,
+    @location(3) height: f32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var heightMap: texture_2d<f32>;
+@group(0) @binding(1) var<storage, read> layers: array<Layer>;
+
+// High quality hash function for procedural noise
+fn hash22(p: vec2f) -> vec2f {
+    var p3 = fract(vec3f(p.x, p.y, p.x) * vec3f(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+// High quality smooth interpolation
+fn quintic(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+// High-quality 2D noise function
+fn noise2D(p: vec2f) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    
+    // Four corner random values
+    let a = hash22(i).x;
+    let b = hash22(i + vec2f(1.0, 0.0)).x;
+    let c = hash22(i + vec2f(0.0, 1.0)).x;
+    let d = hash22(i + vec2f(1.0, 1.0)).x;
+    
+    // Smooth interpolation (using smoothstep instead of quintic)
+    let u = smoothstep(vec2f(0.0), vec2f(1.0), f);
+    
+    // Bilinear interpolation
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
+}
+
+// Procedural gradient noise (keeping as backup)
+fn gradientNoise(p: vec2f, seed: f32) -> f32 {
+    let i = floor(p + seed * 137.1);
+    let f = fract(p + seed * 137.1);
+    
+    // Get gradient vectors for each corner
+    let ga = hash22(i) * 2.0 - 1.0;
+    let gb = hash22(i + vec2f(1.0, 0.0)) * 2.0 - 1.0;
+    let gc = hash22(i + vec2f(0.0, 1.0)) * 2.0 - 1.0;
+    let gd = hash22(i + vec2f(1.0, 1.0)) * 2.0 - 1.0;
+    
+    // Calculate dot products with distance vectors
+    let va = dot(ga, f);
+    let vb = dot(gb, f - vec2f(1.0, 0.0));
+    let vc = dot(gc, f - vec2f(0.0, 1.0));
+    let vd = dot(gd, f - vec2f(1.0, 1.0));
+    
+    // Smooth interpolation
+    let u = quintic(f.x);
+    let v = quintic(f.y);
+    
+    return mix(mix(va, vb, u), mix(vc, vd, u), v);
+}
+
+fn octaveNoise(x: f32, y: f32, octaves: f32, persistence: f32, lacunarity: f32, seed: f32) -> f32 {
+    var total = 0.0;
+    var frequency = 1.0;
+    var amplitude = 1.0;
+    var maxValue = 0.0;
+    
+    let iOctaves = i32(octaves);
+    for (var i = 0; i < iOctaves; i++) {
+        // Use the simpler, higher-quality noise function
+        let noiseValue = noise2D(vec2f(x * frequency, y * frequency) + vec2f(seed + f32(i) * 100.0));
+        total += noiseValue * amplitude;
+        maxValue += amplitude;
+        amplitude *= persistence;
+        frequency *= lacunarity;
+    }
+    
+    return total / maxValue;
+}
+
+// Layer evaluation functions
+fn evaluateNoiseLayer(layer: Layer, uv: vec2f) -> f32 {
+    let noise = octaveNoise(
+        uv.x * layer.scale, 
+        uv.y * layer.scale, 
+        layer.octaves, 
+        layer.persistence, 
+        layer.lacunarity, 
+        layer.seed
+    );
+    
+    // Use full amplitude without adding base height
+    return clamp(noise * layer.amplitude, 0.0, 1.0);
+}
+
+fn evaluateCircleLayer(layer: Layer, uv: vec2f) -> f32 {
+    // Convert UV (0-1) to world coordinates (-5 to 5)
+    let worldPos = (uv - 0.5) * 10.0;
+    let center = vec2f(layer.centerX, layer.centerY);
+    let dist = distance(worldPos, center);
+    
+    let outerRadius = layer.radius;
+    let innerRadius = outerRadius * (1.0 - layer.falloff);
+    
+    if (dist <= innerRadius) {
+        return 1.0;
+    } else if (dist <= outerRadius) {
+        return 1.0 - smoothstep(innerRadius, outerRadius, dist);
+    } else {
+        return 0.0;
+    }
+}
+
+// Blend mode functions
+fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
+    let weightedOverlay = overlay * strength;
+    
+    let blendModeInt = i32(blendMode);
+    switch (blendModeInt) {
+        case 0: { // Add
+            return clamp(base + weightedOverlay, 0.0, 1.0);
+        }
+        case 1: { // Mask
+            return base * weightedOverlay;
+        }
+        case 2: { // Multiply
+            return base * (1.0 + weightedOverlay);
+        }
+        case 3: { // Subtract
+            return clamp(base - weightedOverlay, 0.0, 1.0);
+        }
+        default: {
+            return base;
+        }
+    }
+}
+
+// Calculate height from layers at given UV position
+fn calculateHeight(uv: vec2f) -> f32 {
+    var result = 0.0;
+    let layerCount = arrayLength(&layers);
+    
+    // Process each layer in order
+    for (var i = 0u; i < layerCount; i++) {
+        let layer = layers[i];
+        
+        // Skip disabled layers
+        if (layer.enabled < 0.5) {
+            continue;
+        }
+        
+        var layerValue = 0.0;
+        let layerTypeInt = i32(layer.layerType);
+        
+        // Evaluate layer based on type
+        switch (layerTypeInt) {
+            case 0: { // Noise
+                layerValue = evaluateNoiseLayer(layer, uv);
+            }
+            case 1: { // Circle
+                layerValue = evaluateCircleLayer(layer, uv);
+            }
+            default: {
+                layerValue = 0.0;
+            }
+        }
+        
+        // Blend with accumulated result
+        if (i == 0u) {
+            // First layer is the base
+            result = layerValue * layer.strength;
+        } else {
+            result = blendLayers(result, layerValue, layer.blendMode, layer.strength);
+        }
+    }
+    
+    return clamp(result, 0.0, 1.0);
+}
 
 @vertex
 fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     var output: VertexOutput;
     
-    // Sample height from texture (convert UV to pixel coords)
-    let texCoords = vec2i(input.uv * 512.0);
-    let height = textureLoad(heightMap, texCoords, 0).r;
+    // Calculate height procedurally from layers
+    let height = calculateHeight(input.uv);
     
     // Displace all vertices at Y >= 0 (top surface and side top edges)
     // Only bottom vertices (Y < 0) and side bottom edges remain at their original positions
@@ -58,6 +252,7 @@ fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Ve
     output.worldPos = worldPos.xyz;
     output.normal = input.normal.xyz;
     output.uv = input.uv;
+    output.height = height;  // Pass height to fragment shader
     output.position = uniforms.viewProjMatrix * worldPos;
     
     return output;
@@ -65,9 +260,8 @@ fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Ve
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
-    // Get height value for this pixel
-    let texCoords = vec2i(input.uv * 512.0);
-    let height = textureLoad(heightMap, texCoords, 0).r;
+    // Get height value from vertex shader
+    let height = input.height;
     
     // Heightmap visualization mode (grayscale)
     if (uniforms.visualizationMode > 0.5) {
@@ -75,12 +269,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
         return vec4f(gray, 1.0);
     }
     
-    // Calculate proper normal from heightmap for accurate lighting
+    // Calculate proper normal from procedural heights for accurate lighting
     let texelSize = 1.0 / 512.0;
-    let heightL = textureLoad(heightMap, texCoords + vec2i(-1, 0), 0).r;
-    let heightR = textureLoad(heightMap, texCoords + vec2i(1, 0), 0).r;
-    let heightD = textureLoad(heightMap, texCoords + vec2i(0, -1), 0).r;
-    let heightU = textureLoad(heightMap, texCoords + vec2i(0, 1), 0).r;
+    let heightL = calculateHeight(input.uv + vec2f(-texelSize, 0.0));
+    let heightR = calculateHeight(input.uv + vec2f(texelSize, 0.0));
+    let heightD = calculateHeight(input.uv + vec2f(0.0, -texelSize));
+    let heightU = calculateHeight(input.uv + vec2f(0.0, texelSize));
     
     // Calculate tangent vectors scaled by displacement
     let scale = 5.0; // Match displacement scale

@@ -2,6 +2,8 @@ import { mat4, vec3 } from 'gl-matrix';
 import { GPUContext } from '../core/GPUContext';
 import { PlaneGeometry } from '../geometry/Plane';
 import { PerlinNoise } from '../utils/PerlinNoise';
+import { LayerCompute } from '../core/LayerCompute';
+import { LayerStack } from '../core/LayerSystem';
 import terrainShaderRaw from '../shaders/terrain.wgsl?raw';
 import shadowMapShaderRaw from '../shaders/shadowmap.wgsl?raw';
 
@@ -38,8 +40,7 @@ export class TerrainRenderer {
     private uniformBuffer: GPUBuffer;
     private bindGroup: GPUBindGroup;
     private indexCount: number;
-    private heightTexture: GPUTexture;
-    private sampler: GPUSampler;
+    private layerBuffer: GPUBuffer;  // Store layer data for vertex shader
     
     // Shadow mapping
     private shadowPipeline: GPURenderPipeline;
@@ -49,10 +50,19 @@ export class TerrainRenderer {
     private shadowUniformBuffer: GPUBuffer;
     private shadowBindGroup: GPUBindGroup;
     private readonly shadowMapSize = 2048;
+    
+    // Bind group layout for reuse
+    private bindGroupLayout: GPUBindGroupLayout;
 
     constructor(gpuContext: GPUContext, geometry: PlaneGeometry) {
         this.gpuContext = gpuContext;
         this.indexCount = geometry.indexCount;
+
+        // Create layer buffer for vertex shader
+        this.layerBuffer = gpuContext.device.createBuffer({
+            size: 5 * 32 * 4, // 5 layers * 32 floats * 4 bytes
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
 
         // Create vertex buffers
         this.vertexBuffer = this.createBuffer(geometry.positions, GPUBufferUsage.VERTEX);
@@ -68,24 +78,6 @@ export class TerrainRenderer {
         this.uniformBuffer = gpuContext.device.createBuffer({
             size: 320,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-
-        // Create a default height texture
-        this.heightTexture = gpuContext.createTexture({
-            width: 512,
-            height: 512,
-            format: 'rgba32float',
-        });
-        
-        // Initialize with Perlin noise terrain
-        this.generateTerrain();
-
-        // Create sampler (nearest for float textures)
-        this.sampler = gpuContext.device.createSampler({
-            magFilter: 'nearest',
-            minFilter: 'nearest',
-            addressModeU: 'clamp-to-edge',
-            addressModeV: 'clamp-to-edge',
         });
         
         // Create shadow map texture
@@ -128,12 +120,37 @@ export class TerrainRenderer {
             }
         });
 
+        // Create explicit bind group layout
+        this.bindGroupLayout = gpuContext.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: {
+                        type: 'uniform'
+                    }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: {
+                        type: 'read-only-storage'
+                    }
+                }
+            ]
+        });
+
+        // Create pipeline layout
+        const pipelineLayout = gpuContext.device.createPipelineLayout({
+            bindGroupLayouts: [this.bindGroupLayout]
+        });
+
         // Create pipeline
         console.log('Creating render pipeline...');
         try {
             this.pipeline = gpuContext.device.createRenderPipeline({
             label: 'Terrain Pipeline',
-            layout: 'auto',
+            layout: pipelineLayout,
             vertex: {
                 module: shaderModule,
                 entryPoint: 'vertexMain',
@@ -195,7 +212,7 @@ export class TerrainRenderer {
         
         this.shadowPipeline = gpuContext.device.createRenderPipeline({
             label: 'Shadow Map Pipeline',
-            layout: 'auto',
+            layout: pipelineLayout,
             vertex: {
                 module: shadowShaderModule,
                 entryPoint: 'vertexMain',
@@ -242,9 +259,9 @@ export class TerrainRenderer {
             },
         });
         
-        // Create shadow bind group
+        // Create shadow bind group (simplified without height texture)
         this.shadowBindGroup = gpuContext.device.createBindGroup({
-            layout: this.shadowPipeline.getBindGroupLayout(0),
+            layout: this.bindGroupLayout,
             entries: [
                 {
                     binding: 0,
@@ -252,14 +269,14 @@ export class TerrainRenderer {
                 },
                 {
                     binding: 1,
-                    resource: this.heightTexture.createView(),
+                    resource: { buffer: this.layerBuffer },
                 },
             ],
         });
 
-        // Create bind group
+        // Create bind group using explicit layout
         this.bindGroup = gpuContext.device.createBindGroup({
-            layout: this.pipeline.getBindGroupLayout(0),
+            layout: this.bindGroupLayout,
             entries: [
                 {
                     binding: 0,
@@ -267,12 +284,85 @@ export class TerrainRenderer {
                 },
                 {
                     binding: 1,
-                    resource: this.heightTexture.createView(),
+                    resource: { buffer: this.layerBuffer },
                 },
             ],
         });
 
         console.log('✓ Terrain renderer initialized');
+    }
+
+    /**
+     * Update layer data in the vertex shader
+     */
+    private updateLayerBuffer(layerStack: LayerStack): void {
+        const layers = layerStack.getAllLayers();
+        const data = new Float32Array(5 * 32); // 5 layers * 32 floats
+        
+        for (let i = 0; i < Math.min(layers.length, 5); i++) {
+            const layer = layers[i];
+            const offset = i * 32;
+            
+            // Serialize layer data to match WGSL struct
+            data[offset + 0] = layer.type === 'noise' ? 0.0 : layer.type === 'circle' ? 1.0 : 2.0; // layerType
+            data[offset + 1] = layer.blendMode === 'add' ? 0.0 : layer.blendMode === 'mask' ? 1.0 : 
+                              layer.blendMode === 'multiply' ? 2.0 : 3.0; // blendMode
+            data[offset + 2] = layer.enabled ? 1.0 : 0.0; // enabled
+            data[offset + 3] = layer.strength; // strength
+            
+            if (layer.type === 'noise') {
+                const noiseLayer = layer as any;
+                data[offset + 4] = noiseLayer.scale || 4.0; // scale
+                data[offset + 5] = noiseLayer.octaves || 4.0; // octaves
+                data[offset + 6] = noiseLayer.persistence || 0.5; // persistence
+                data[offset + 7] = noiseLayer.lacunarity || 2.0; // lacunarity
+                data[offset + 8] = noiseLayer.amplitude || 0.5; // amplitude
+                data[offset + 9] = noiseLayer.seed || 12345; // seed
+            } else if (layer.type === 'circle') {
+                const circleLayer = layer as any;
+                data[offset + 10] = circleLayer.centerX || 0.0; // centerX
+                data[offset + 11] = circleLayer.centerY || 0.0; // centerY
+                data[offset + 12] = circleLayer.radius || 1.0; // radius
+                data[offset + 13] = circleLayer.falloff || 0.5; // falloff
+            }
+        }
+        
+        this.gpuContext.device.queue.writeBuffer(this.layerBuffer, 0, data);
+    }
+
+    /**
+     * Recreate bind groups when needed
+     */
+    private createBindGroups(): void {
+        // Recreate shadow bind group
+        this.shadowBindGroup = this.gpuContext.device.createBindGroup({
+            layout: this.bindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: { buffer: this.shadowUniformBuffer },
+                },
+                {
+                    binding: 1,
+                    resource: { buffer: this.layerBuffer },
+                },
+            ],
+        });
+
+        // Recreate main bind group
+        this.bindGroup = this.gpuContext.device.createBindGroup({
+            layout: this.bindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: { buffer: this.uniformBuffer },
+                },
+                {
+                    binding: 1,
+                    resource: { buffer: this.layerBuffer },
+                },
+            ],
+        });
     }
 
     /**
@@ -426,60 +516,25 @@ export class TerrainRenderer {
         this.uvBuffer.destroy();
         this.indexBuffer.destroy();
         this.uniformBuffer.destroy();
-        this.heightTexture.destroy();
+        this.layerBuffer.destroy();
         this.shadowMapTexture.destroy();
         this.shadowUniformBuffer.destroy();
     }
 
     /**
-     * Generate terrain height data using Perlin noise
+     * Generate terrain height data using layer system (now direct procedural)
      */
-    public generateTerrain(
-        seed: number = 12345,
-        scale: number = 4.0,
-        octaves: number = 4,
-        persistence: number = 0.5,
-        lacunarity: number = 2.0,
-        amplitude: number = 0.5,
-        baseHeight: number = 0.3
-    ): void {
-        const noise = new PerlinNoise(seed);
-        const pixels = 512 * 512;
-        const data = new Float32Array(pixels * 4);
-        
-        for (let y = 0; y < 512; y++) {
-            for (let x = 0; x < 512; x++) {
-                const i = (y * 512 + x);
-                
-                // Normalize coordinates to 0-1
-                const fx = x / 512;
-                const fy = y / 512;
-                
-                // Generate Perlin noise value (-1 to 1)
-                const noiseValue = noise.octaveNoise(
-                    fx * scale,
-                    fy * scale,
-                    octaves,
-                    persistence,
-                    lacunarity
-                );
-                
-                // Map to height range: baseHeight ± amplitude
-                const height = baseHeight + (noiseValue * amplitude);
-                
-                data[i * 4] = Math.max(0, Math.min(1, height)); // R: height (clamped 0-1)
-                data[i * 4 + 1] = 0;  // G: water = 0
-                data[i * 4 + 2] = 0;  // B: unused
-                data[i * 4 + 3] = 1;  // A: unused
-            }
-        }
-        
-        // Upload to GPU
-        this.gpuContext.device.queue.writeTexture(
-            { texture: this.heightTexture },
-            data,
-            { bytesPerRow: 512 * 4 * 4 }, // 4 channels * 4 bytes per float
-            { width: 512, height: 512 }
-        );
+    public async generateTerrainFromLayers(layerStack: LayerStack): Promise<void> {
+        // Update layer data in vertex shader buffer
+        this.updateLayerBuffer(layerStack);
     }
+
+    /**
+     * Upload image data for use in image layers (placeholder for future implementation)
+     */
+    public uploadImageForLayer(imageData: ImageData, arrayIndex: number): void {
+        // TODO: Implement image layer support in vertex shader
+        console.warn('Image layers not yet supported in direct procedural mode');
+    }
+
 }
