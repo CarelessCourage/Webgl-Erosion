@@ -135,10 +135,10 @@ fn applySedimentTransport(coord: vec2i, velocity: vec2f) -> vec2f {
     var newSediment = currentSediment;
     
     if (sedimentCapacity > currentSediment) {
-        // Erode terrain (dissolve)
-        let erosionAmount = params.dissolutionConstant * (sedimentCapacity - currentSediment);
-        newHeight -= erosionAmount * params.deltaTime;
-        newSediment += erosionAmount * params.deltaTime;
+        // Erode terrain (dissolve) - REMOVE deltaTime for dramatic effect
+        let erosionAmount = params.dissolutionConstant * (sedimentCapacity - currentSediment) * 0.1;
+        newHeight -= erosionAmount;
+        newSediment += erosionAmount;
     } else {
         // Deposit sediment
         let depositionAmount = params.depositionConstant * (currentSediment - sedimentCapacity);
@@ -255,8 +255,8 @@ fn flowMain(@builtin(global_invocation_id) id: vec3u) {
     newWater -= params.evaporationRate * params.deltaTime;
     newWater = max(newWater, 0.0);
     
-    // Clamp values to reasonable ranges
-    newHeight = clamp(newHeight, 0.0, 10.0);
+    // Clamp values to reasonable ranges (increased range for more dramatic erosion)
+    newHeight = clamp(newHeight, -2.0, 10.0);
     newWater = clamp(newWater, 0.0, 5.0);
     
     // Write results

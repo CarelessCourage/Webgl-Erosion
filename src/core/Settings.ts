@@ -1,7 +1,7 @@
 import { GUI } from "lil-gui";
 import { OrbitCamera } from "./Camera";
 import { LayerStack, AlphaLayer } from "./LayerSystem";
-import { ErosionSimulation } from "../simulation/ErosionSimulation.working.js";
+import { ErosionSimulationMultiPass as ErosionSimulation } from "../simulation/ErosionSimulation.multipass.js";
 
 /**
  * Application settings with lil-gui control panel
@@ -12,14 +12,14 @@ export class Settings {
 
   // Legacy terrain settings (will be removed after migration)
   public terrain = {
-    seed: 12345,
-    scale: 4.0,
-    octaves: 4,
-    persistence: 0.5,
-    lacunarity: 2.0,
-    amplitude: 0.5,
+    seed: 14426,
+    scale: 3.9,
+    octaves: 5,
+    persistence: 0.55,
+    lacunarity: 1.6,
+    amplitude: 0.4,
     baseHeight: 0.3,
-    meshResolution: 10, // Higher resolution for smoother terrain (32x32 grid)
+    meshResolution: 15, // Higher resolution for smoother terrain (32x32 grid)
     randomizeSeed: () => this.randomizeSeed(),
   };
 
@@ -47,12 +47,12 @@ export class Settings {
 
   // Color settings
   public colors = {
-    lowColor: "#177517", // Green (23, 82, 23)
-    midColor: "#8c6432", // Brown (140, 100, 50)
-    highColor: "#999999", // Light gray (153, 153, 153)
-    bottomColor: "#281e14", // Dark brown (40, 30, 20)
+    lowColor: "#429a42", // Green (66, 154, 66)
+    midColor: "#565048", // Brown (140, 100, 50)
+    highColor: "#fafafa", // Light gray (153, 153, 153)
+    bottomColor: "#e5c29f", // Dark brown (40, 30, 20)
     lowThreshold: 0.0,
-    highThreshold: 0.35,
+    highThreshold: 0.05,
     backgroundColor: "#87ceeb", // Sky blue (135, 206, 235)
   };
 
@@ -626,8 +626,15 @@ export class Settings {
     console.log("Starting erosion simulation...");
     this.erosion.isRunning = true;
 
-    // Initialize terrain from current layer setup
-    this.erosionSimulation.initializeTerrain(this.layerStack);
+    // Only initialize terrain if not already initialized (first start)
+    // This prevents overwriting existing erosion when resuming
+    if (!this.erosionSimulation.isTerrainInitialized()) {
+      console.log("🔧 First start - initializing terrain from layers");
+      this.erosionSimulation.initializeTerrain(this.layerStack);
+    } else {
+      console.log("🔧 Resuming existing simulation - preserving erosion data");
+    }
+    
     this.erosionSimulation.start();
   }
 

@@ -2,7 +2,7 @@ import { GPUContext } from "./core/GPUContext";
 import { OrbitCamera } from "./core/Camera";
 import { Settings } from "./core/Settings";
 import { LayerCompute } from "./core/LayerCompute";
-import { ErosionSimulation } from "./simulation/ErosionSimulation.working.js";
+import { ErosionSimulationMultiPass as ErosionSimulation } from "./simulation/ErosionSimulation.multipass.js";
 import { vec3, mat4 } from "gl-matrix";
 import { createPlane } from "./geometry/Plane";
 import { TerrainRenderer } from "./rendering/TerrainRenderer";

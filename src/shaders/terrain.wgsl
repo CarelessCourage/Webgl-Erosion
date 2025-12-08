@@ -246,7 +246,7 @@ fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Ve
     let textureHeight = textureLoad(heightTexture, texelCoord, 0).r;
     
     // Blend procedural and texture height (texture takes priority for erosion effects)
-    let height = mix(proceduralHeight, textureHeight, 0.8);
+    let height = mix(proceduralHeight, textureHeight, 0.9);
     
     // Displace all vertices at Y >= 0 (top surface and side top edges)
     // Only bottom vertices (Y < 0) and side bottom edges remain at their original positions

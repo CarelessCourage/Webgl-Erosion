@@ -397,12 +397,21 @@ export class TerrainRenderer {
   private createBindGroups(): void {
     // Get height texture or use dummy
     let heightTexture = this.dummyTexture;
+    let textureSource = "dummy";
+
     if (this.layerCompute) {
       const layerTexture = this.layerCompute.getOutputTexture();
       if (layerTexture) {
         heightTexture = layerTexture;
+        textureSource = "layerCompute";
       }
     }
+
+    console.log(`🔧 Creating bind groups with ${textureSource} texture`);
+    console.log(
+      `🔧 Texture dimensions: ${heightTexture.width}x${heightTexture.height}`
+    );
+    console.log(`🔧 Texture format: ${heightTexture.format}`);
 
     // Create shadow bind group
     this.shadowBindGroup = this.gpuContext.device.createBindGroup({
