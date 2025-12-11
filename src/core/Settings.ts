@@ -1,6 +1,7 @@
 import { GUI } from "lil-gui";
 import { OrbitCamera } from "./Camera";
 import { LayerStack, AlphaLayer } from "./LayerSystem";
+import { ColorSystem, ColorGroup } from "./ColorSystem";
 import { ErosionSimulationMultiPass as ErosionSimulation } from "../simulation/ErosionSimulation.multipass.js";
 
 /**
@@ -9,6 +10,9 @@ import { ErosionSimulationMultiPass as ErosionSimulation } from "../simulation/E
 export class Settings {
   // Layer system for terrain generation
   public layerStack: LayerStack;
+  
+  // Color system for terrain coloration
+  public colorSystem: ColorSystem;
 
   // Legacy terrain settings (will be removed after migration)
   public terrain = {
@@ -99,6 +103,7 @@ export class Settings {
 
   private gui: GUI;
   private onRegenerateCallback?: () => Promise<void> | void;
+  private onColorChangeCallback?: () => void;
   private onImageUploadCallback?: (
     imageData: ImageData,
     layerId: string
@@ -108,14 +113,18 @@ export class Settings {
   public erosionSimulation?: ErosionSimulation; // Made public so it can be set after construction
   private layersFolder?: GUI;
   private layerFolders: Map<string, GUI> = new Map();
+  private colorGroupsFolder?: GUI;
+  private colorGroupFolders: Map<string, GUI> = new Map();
 
   constructor(camera?: OrbitCamera, erosionSimulation?: ErosionSimulation) {
     this.cameraInstance = camera;
     this.erosionSimulation = erosionSimulation;
     this.layerStack = new LayerStack();
+    this.colorSystem = new ColorSystem();
     this.gui = new GUI({ title: "Terrain Controls", width: 300 });
     this.setupGUI();
     this.setupLayerCallbacks();
+    this.setupColorCallbacks();
   }
 
   private setupGUI(): void {
@@ -211,6 +220,9 @@ export class Settings {
     this.updateColorFolderVisibility();
     this.colorFolder.close();
 
+    // New color groups system
+    this.setupColorGroupsGUI();
+
     // Lighting settings folder
     const lightingFolder = this.gui.addFolder("Lighting & Shadows");
     lightingFolder
@@ -278,6 +290,10 @@ export class Settings {
     callback: (imageData: ImageData, layerId: string) => void
   ): void {
     this.onImageUploadCallback = callback;
+  }
+
+  public onColorChange(callback: () => void): void {
+    this.onColorChangeCallback = callback;
   }
 
   private triggerRegenerate(): void {
@@ -715,6 +731,174 @@ export class Settings {
     console.log(
       `Global rain ${this.erosion.globalRain ? "enabled" : "disabled"}`
     );
+  }
+
+  // Color System Management
+  private setupColorCallbacks(): void {
+    this.colorSystem.onChange(() => {
+      if (this.onColorChangeCallback) {
+        this.onColorChangeCallback();
+      }
+      this.triggerRegenerate();
+    });
+  }
+
+  private setupColorGroupsGUI(): void {
+    this.colorGroupsFolder = this.gui.addFolder("🎨 Color Groups");
+    
+    // Add button for new color group
+    const controls = {
+      addGroup: () => this.addColorGroup(),
+    };
+    this.colorGroupsFolder.add(controls, "addGroup").name("➕ Add Color Group");
+    
+    this.refreshColorGroupsGUI();
+    this.colorGroupsFolder.close();
+  }
+
+  private addColorGroup(): void {
+    const groupCount = this.colorSystem.getAllGroups().length;
+    this.colorSystem.addColorGroup({
+      name: `Color Group ${groupCount + 1}`,
+      colorStops: [
+        { id: "stop_0", threshold: 0.0, color: "#000000", enabled: true },
+        { id: "stop_1", threshold: 1.0, color: "#ffffff", enabled: true },
+      ],
+    });
+    
+    this.refreshColorGroupsGUI();
+  }
+
+  private refreshColorGroupsGUI(): void {
+    if (!this.colorGroupsFolder) return;
+
+    // Remove all existing folders
+    this.colorGroupFolders.forEach((folder) => folder.destroy());
+    this.colorGroupFolders.clear();
+
+    // Add folders for all current groups
+    const groups = this.colorSystem.getAllGroups();
+    groups.forEach((group) => {
+      this.createColorGroupFolder(group);
+    });
+  }
+
+  private createColorGroupFolder(group: ColorGroup): void {
+    if (!this.colorGroupsFolder) return;
+
+    const folder = this.colorGroupsFolder.addFolder(`${group.name}`);
+    this.colorGroupFolders.set(group.id, folder);
+
+    // Group controls
+    folder
+      .add(group, "enabled")
+      .name("Enabled")
+      .onChange(() => {
+        this.colorSystem.updateColorGroup(group.id, { enabled: group.enabled });
+      });
+
+    folder
+      .add(group, "strength", 0.0, 1.0, 0.05)
+      .name("Strength")
+      .onChange(() => {
+      });
+
+    folder
+      .add(group, "blendMode", ["replace", "multiply", "add", "overlay"])
+      .name("Blend Mode")
+      .onChange(() => {
+        this.colorSystem.updateColorGroup(group.id, { blendMode: group.blendMode });
+      });
+
+    // Source layer selection
+    const layerOptions: { [key: string]: string | null } = {
+      "Master (Combined)": null,
+    };
+    this.layerStack.getAllLayers().forEach((layer) => {
+      layerOptions[layer.name] = layer.id;
+    });
+
+    const sourceControls = {
+      sourceLayer: group.sourceLayerId || "Master (Combined)",
+    };
+
+    folder
+      .add(sourceControls, "sourceLayer", layerOptions)
+      .name("Alpha Source")
+      .onChange((value: string | null) => {
+        this.colorSystem.updateColorGroup(group.id, { 
+          sourceLayerId: value === "Master (Combined)" ? null : value 
+        });
+      });
+
+    // Color stops section
+    const stopsFolder = folder.addFolder("Color Stops");
+    
+    const stopControls = {
+      addStop: () => {
+        const newThreshold = group.colorStops.length > 0
+          ? (group.colorStops[group.colorStops.length - 1].threshold + 0.1)
+          : 0.5;
+        this.colorSystem.addColorStop(group.id, {
+          threshold: Math.min(newThreshold, 1.0),
+          color: "#808080",
+        });
+        this.refreshColorGroupsGUI();
+      },
+    };
+
+    stopsFolder.add(stopControls, "addStop").name("➕ Add Color Stop");
+
+    // Display existing stops
+    group.colorStops.forEach((stop, index) => {
+      const stopFolder = stopsFolder.addFolder(`Stop ${index + 1} (${(stop.threshold * 100).toFixed(0)}%)`);
+      
+      stopFolder
+        .add(stop, "enabled")
+        .name("Enabled")
+        .onChange(() => {
+          this.colorSystem.updateColorStop(group.id, stop.id, { enabled: stop.enabled });
+        });
+
+      stopFolder
+        .add(stop, "threshold", 0.0, 1.0, 0.01)
+        .name("Threshold")
+        .onChange(() => {
+          this.colorSystem.updateColorStop(group.id, stop.id, { threshold: stop.threshold });
+          // Note: Folder names won't update in real-time to avoid closing folders during interaction
+        });
+
+      stopFolder
+        .addColor(stop, "color")
+        .name("Color")
+        .onChange(() => {
+          this.colorSystem.updateColorStop(group.id, stop.id, { color: stop.color });
+        });
+
+      const removeControl = {
+        remove: () => {
+          this.colorSystem.removeColorStop(group.id, stop.id);
+          this.refreshColorGroupsGUI();
+        },
+      };
+      stopFolder.add(removeControl, "remove").name("🗑️ Remove");
+      stopFolder.close();
+    });
+
+    stopsFolder.close();
+
+    // Group actions
+    const groupControls = {
+      remove: () => {
+        if (confirm(`Remove color group "${group.name}"?`)) {
+          this.colorSystem.removeColorGroup(group.id);
+          this.refreshColorGroupsGUI();
+        }
+      },
+    };
+    folder.add(groupControls, "remove").name("🗑️ Remove Group");
+
+    folder.close();
   }
 
   public destroy(): void {

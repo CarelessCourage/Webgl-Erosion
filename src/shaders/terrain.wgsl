@@ -40,6 +40,26 @@ struct Layer {
     padding: f32,
 }
 
+// Color system structures
+struct ColorStop {
+    threshold: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+}
+
+struct ColorGroup {
+    enabled: f32,           // 0.0 = disabled, 1.0 = enabled
+    strength: f32,          // 0.0 to 1.0
+    blendMode: f32,         // 0=replace, 1=multiply, 2=add, 3=overlay
+    stopCount: f32,         // Number of color stops
+    sourceLayerIndex: f32,  // -1 = master alpha, >= 0 = specific layer index
+    padding1: f32,
+    padding2: f32,
+    padding3: f32,
+    stops: array<ColorStop, 16>,  // Max 16 stops per group
+}
+
 struct VertexInput {
     @location(0) position: vec4f,
     @location(1) normal: vec4f,
@@ -59,6 +79,7 @@ struct VertexOutput {
 @group(0) @binding(2) var heightTexture: texture_2d<f32>;
 @group(0) @binding(3) var imageTextures: texture_2d_array<f32>;
 @group(0) @binding(4) var imageSampler: sampler;
+@group(0) @binding(5) var<storage, read> colorGroups: array<ColorGroup, 8>;
 
 // High quality hash function for procedural noise
 fn hash22(p: vec2f) -> vec2f {
@@ -177,6 +198,172 @@ fn evaluateImageLayer(layer: Layer, uv: vec2f) -> f32 {
     let imageIndex = i32(layer.imageIndex);
     return textureSampleLevel(imageTextures, imageSampler, clampedUV, imageIndex, 0.0).r;
 }
+
+// Color System Functions
+
+// Evaluate a single color group to get color based on alpha value
+fn evaluateColorGroup(group: ColorGroup, alphaValue: f32) -> vec3f {
+    let stopCount = i32(group.stopCount);
+    
+    // Handle edge cases
+    if (stopCount == 0) {
+        return vec3f(0.0);
+    }
+    if (stopCount == 1) {
+        return vec3f(group.stops[0].r, group.stops[0].g, group.stops[0].b);
+    }
+    
+    // Clamp alpha value to valid range
+    let alpha = clamp(alphaValue, 0.0, 1.0);
+    
+    // Find which two stops to interpolate between
+    var lowerStop = 0;
+    var upperStop = 0;
+    
+    // Find the stops that bracket our alpha value
+    for (var i = 0; i < stopCount - 1; i++) {
+        if (alpha >= group.stops[i].threshold && alpha <= group.stops[i + 1].threshold) {
+            lowerStop = i;
+            upperStop = i + 1;
+            break;
+        }
+    }
+    
+    // Handle if alpha is beyond last stop
+    if (alpha > group.stops[stopCount - 1].threshold) {
+        lowerStop = stopCount - 1;
+        upperStop = stopCount - 1;
+    }
+    
+    // Get the two colors to blend
+    let color1 = vec3f(group.stops[lowerStop].r, group.stops[lowerStop].g, group.stops[lowerStop].b);
+    let color2 = vec3f(group.stops[upperStop].r, group.stops[upperStop].g, group.stops[upperStop].b);
+    
+    // Calculate interpolation factor
+    let t1 = group.stops[lowerStop].threshold;
+    let t2 = group.stops[upperStop].threshold;
+    let t = select(0.0, (alpha - t1) / (t2 - t1), t2 != t1);
+    
+    // Smooth interpolation between colors
+    return mix(color1, color2, smoothstep(0.0, 1.0, t));
+}
+
+// Blend two colors based on blend mode
+fn blendColors(base: vec3f, overlay: vec3f, blendMode: f32, strength: f32) -> vec3f {
+    let mode = i32(blendMode);
+    
+    switch (mode) {
+        case 0: { // Replace
+            return mix(base, overlay, strength);
+        }
+        case 1: { // Multiply
+            return mix(base, base * overlay, strength);
+        }
+        case 2: { // Add
+            return mix(base, base + overlay, strength);
+        }
+        case 3: { // Overlay
+            // Photoshop-style overlay
+            var result: vec3f;
+            for (var i = 0; i < 3; i++) {
+                if (base[i] < 0.5) {
+                    result[i] = 2.0 * base[i] * overlay[i];
+                } else {
+                    result[i] = 1.0 - 2.0 * (1.0 - base[i]) * (1.0 - overlay[i]);
+                }
+            }
+            return mix(base, result, strength);
+        }
+        default: {
+            return base;
+        }
+    }
+}
+
+// Calculate individual layer alpha values for color group masking
+fn getLayerAlpha(layerIndex: i32, uv: vec2f) -> f32 {
+    if (layerIndex < 0 || layerIndex >= 5) {
+        return 0.0;
+    }
+    
+    let layer = layers[layerIndex];
+    if (layer.enabled < 0.5) {
+        return 0.0;
+    }
+    
+    let layerTypeInt = i32(layer.layerType);
+    var layerValue = 0.0;
+    
+    switch (layerTypeInt) {
+        case 0: { // Noise
+            layerValue = evaluateNoiseLayer(layer, uv);
+        }
+        case 1: { // Circle
+            layerValue = evaluateCircleLayer(layer, uv);
+        }
+        case 2: { // Image
+            layerValue = evaluateImageLayer(layer, uv);
+        }
+        default: {
+            layerValue = 0.0;
+        }
+    }
+    
+    return layerValue * layer.strength;
+}
+
+// Evaluate all color groups and blend them together
+fn evaluateAllColorGroups(masterAlpha: f32, uv: vec2f) -> vec3f {
+    var finalColor = vec3f(0.0);
+    var firstGroup = true;
+    
+    // Process each color group
+    for (var i = 0; i < 8; i++) {
+        let group = colorGroups[i];
+        
+        // Skip disabled groups
+        if (group.enabled < 0.5 || group.stopCount < 1.0) {
+            continue;
+        }
+        
+        // Determine which alpha value to use for this group
+        var alphaValue = masterAlpha;
+        let sourceIndex = i32(group.sourceLayerIndex);
+        
+        if (sourceIndex >= 0) {
+            // Use specific layer's alpha as mask
+            alphaValue = getLayerAlpha(sourceIndex, uv);
+        }
+        
+        // Evaluate this group's color
+        let groupColor = evaluateColorGroup(group, alphaValue);
+        
+        // Blend with accumulated color
+        if (firstGroup) {
+            finalColor = groupColor * group.strength;
+            firstGroup = false;
+        } else {
+            finalColor = blendColors(finalColor, groupColor, group.blendMode, group.strength);
+        }
+    }
+    
+    // Fallback to legacy colors if no groups produced color
+    if (firstGroup) {
+        // Use old color system
+        if (masterAlpha < uniforms.lowThreshold) {
+            finalColor = uniforms.lowColor;
+        } else if (masterAlpha < uniforms.highThreshold) {
+            let t = (masterAlpha - uniforms.lowThreshold) / (uniforms.highThreshold - uniforms.lowThreshold);
+            finalColor = mix(uniforms.lowColor, uniforms.midColor, t);
+        } else {
+            let t = (masterAlpha - uniforms.highThreshold) / (1.0 - uniforms.highThreshold);
+            finalColor = mix(uniforms.midColor, uniforms.highColor, t);
+        }
+    }
+    
+    return finalColor;
+}
+
 
 // Blend mode functions
 fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
@@ -346,33 +533,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     var diffuse: f32;
     
     if (isTopSurface) {
-        // Height-based coloring for top surface
-        // Normalize colors - handle both 0-1 and 0-255 ranges
-        var normalizedLowColor = uniforms.lowColor;
-        var normalizedMidColor = uniforms.midColor;
-        var normalizedHighColor = uniforms.highColor;
+        // Use new color group system for top surface
+        // Height is used as the master alpha value
+        color = evaluateAllColorGroups(height, input.uv);
         
-        // If any component > 1.0, assume 0-255 range and convert
-        if (uniforms.lowColor.x > 1.0 || uniforms.lowColor.y > 1.0 || uniforms.lowColor.z > 1.0) {
-            normalizedLowColor = uniforms.lowColor / 255.0;
-        }
-        if (uniforms.midColor.x > 1.0 || uniforms.midColor.y > 1.0 || uniforms.midColor.z > 1.0) {
-            normalizedMidColor = uniforms.midColor / 255.0;
-        }
-        if (uniforms.highColor.x > 1.0 || uniforms.highColor.y > 1.0 || uniforms.highColor.z > 1.0) {
-            normalizedHighColor = uniforms.highColor / 255.0;
-        }
-        
-        color = normalizedLowColor;
-        
-        if (height > uniforms.lowThreshold) {
-            let t = (height - uniforms.lowThreshold) / (uniforms.highThreshold - uniforms.lowThreshold);
-            color = mix(normalizedLowColor, normalizedMidColor, clamp(t, 0.0, 1.0));
-        }
-        if (height > uniforms.highThreshold) {
-            let t = (height - uniforms.highThreshold) / 0.3;
-            color = mix(normalizedMidColor, normalizedHighColor, clamp(t, 0.0, 1.0));
-        }
         // Top surface gets normal diffuse lighting with ambient control
         // Use shadowIntensity to control ambient light (0 = bright, 1 = dark ambient)
         let ambientLevel = mix(0.4, 0.1, uniforms.shadowIntensity);

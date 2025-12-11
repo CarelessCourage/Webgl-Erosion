@@ -288,9 +288,17 @@ async function init() {
       imageLayerIndex = (imageLayerIndex + 1) % 4; // Cycle through available slots
     });
 
+    // Handle color changes
+    settings.onColorChange(() => {
+      terrainRenderer.updateColorData(settings.colorSystem, settings.layerStack);
+    });
+
     // Generate initial terrain using layer system
     console.log("Generating initial terrain...");
     await terrainRenderer.generateTerrainFromLayers(settings.layerStack);
+    
+    // Initialize color data
+    terrainRenderer.updateColorData(settings.colorSystem, settings.layerStack);
     console.log("✓ Initial terrain generated from layers");
 
     // Create depth of field pass

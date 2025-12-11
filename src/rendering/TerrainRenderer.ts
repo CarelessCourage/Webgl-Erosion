@@ -41,6 +41,7 @@ export class TerrainRenderer {
   private bindGroup!: GPUBindGroup;
   private indexCount: number;
   private layerBuffer: GPUBuffer; // Store layer data for vertex shader
+  private colorBuffer: GPUBuffer; // Store color group data for fragment shader
 
   // Shadow mapping
   private shadowPipeline: GPURenderPipeline;
@@ -68,6 +69,14 @@ export class TerrainRenderer {
     // Create layer buffer for vertex shader
     this.layerBuffer = gpuContext.device.createBuffer({
       size: 5 * 18 * 4, // 5 layers * 18 floats * 4 bytes (matching WGSL struct size)
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
+    // Create color buffer for fragment shader
+    // 8 groups * (8 header floats + 16 stops * 4 floats) * 4 bytes
+    const floatsPerGroup = 8 + 16 * 4; // 72 floats per group
+    this.colorBuffer = gpuContext.device.createBuffer({
+      size: 8 * floatsPerGroup * 4, // 8 groups * 72 floats * 4 bytes = 2304 bytes
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -207,6 +216,13 @@ export class TerrainRenderer {
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           sampler: {
             type: "filtering",
+          },
+        },
+        {
+          binding: 5,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: {
+            type: "read-only-storage",
           },
         },
       ],
@@ -423,6 +439,24 @@ export class TerrainRenderer {
   }
 
   /**
+   * Update color group data in the fragment shader
+   */
+  public updateColorData(colorSystem: any, layerStack: LayerStack): void {
+    // Build layer ID to index mapping
+    const layerIdToIndex = new Map<string, number>();
+    const layers = layerStack.getAllLayers();
+    layers.forEach((layer, index) => {
+      layerIdToIndex.set(layer.id, index);
+    });
+
+    // Serialize color system data for GPU
+    const data = colorSystem.serializeForGPU(layerIdToIndex);
+
+    // Write to GPU buffer
+    this.gpuContext.device.queue.writeBuffer(this.colorBuffer, 0, data);
+  }
+
+  /**
    * Recreate bind groups when needed
    */
   private createBindGroups(): void {
@@ -468,6 +502,10 @@ export class TerrainRenderer {
           binding: 4,
           resource: this.layerCompute ? this.layerCompute.getImageSampler() : this.dummySampler,
         },
+        {
+          binding: 5,
+          resource: { buffer: this.colorBuffer },
+        },
       ],
     });
 
@@ -494,6 +532,10 @@ export class TerrainRenderer {
         {
           binding: 4,
           resource: this.layerCompute ? this.layerCompute.getImageSampler() : this.dummySampler,
+        },
+        {
+          binding: 5,
+          resource: { buffer: this.colorBuffer },
         },
       ],
     });
