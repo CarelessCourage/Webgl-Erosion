@@ -801,6 +801,7 @@ export class Settings {
       .add(group, "strength", 0.0, 1.0, 0.05)
       .name("Strength")
       .onChange(() => {
+        this.colorSystem.updateColorGroup(group.id, { strength: group.strength });
       });
 
     folder
