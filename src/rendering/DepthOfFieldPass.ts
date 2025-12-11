@@ -2,12 +2,14 @@ import dofBlurShader from '../shaders/dof-blur.wgsl?raw';
 
 export interface DOFSettings {
     enabled: boolean;
-    focalDepth: number;      // Distance from camera (10-25 range)
+    focalDepth: number;      // Relative offset from camera distance OR auto-focus depth
     focalRange: number;      // Range around focal depth that stays sharp
     blurStrength: number;    // Maximum blur for far objects
     nearBlurStrength: number; // Blur strength for near objects
     cameraNear?: number;     // Camera near plane (default: 0.01)
     cameraFar?: number;      // Camera far plane (default: 500)
+    cameraDistance?: number; // Current camera distance for relative focal depth
+    autoFocus?: boolean;     // If true, automatically focus on center of screen
 }
 
 export class DepthOfFieldPass {
@@ -31,9 +33,9 @@ export class DepthOfFieldPass {
         
         // Create uniform buffer for DOF parameters
         // Layout: focalDepth(4) + focalRange(4) + blurStrength(4) + nearBlurStrength(4) + 
-        //         enabled(4) + cameraNear(4) + cameraFar(4) + padding(4) + direction(8) = 40 bytes
+        //         enabled(4) + cameraNear(4) + cameraFar(4) + cameraDistance(4) + direction(8) = 48 bytes
         this.uniformBuffer = device.createBuffer({
-            size: 48, // Increased from 32 to 48 for camera params
+            size: 48,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         
@@ -85,7 +87,7 @@ export class DepthOfFieldPass {
      * Update DOF uniform parameters
      */
     public updateSettings(settings: DOFSettings): void {
-        const data = new Float32Array(12); // Increased from 8 to 12
+        const data = new Float32Array(12);
         data[0] = settings.focalDepth;
         data[1] = settings.focalRange;
         data[2] = settings.blurStrength;
@@ -93,7 +95,7 @@ export class DepthOfFieldPass {
         data[4] = settings.enabled ? 1.0 : 0.0;
         data[5] = settings.cameraNear ?? 0.01; // Camera near plane
         data[6] = settings.cameraFar ?? 500;    // Camera far plane
-        // data[7] is padding
+        data[7] = settings.cameraDistance ?? 15.0; // Current camera distance
         // data[8-9] will be direction (set per-pass)
         
         this.device.queue.writeBuffer(this.uniformBuffer, 0, data);

@@ -21,6 +21,9 @@ export class OrbitCamera {
     private azimuth: number = 0; // horizontal angle (radians)
     private elevation: number = Math.PI / 4; // vertical angle (radians)
     
+    // Public getter for camera distance (useful for DOF)
+    public getDistance(): number { return this.distance; }
+    
     // Damping
     public enableDamping: boolean = true;
     private _dampingFactor: number = 0.2;

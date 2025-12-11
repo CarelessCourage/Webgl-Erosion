@@ -2,6 +2,7 @@ import { GUI } from "lil-gui";
 import { OrbitCamera } from "./Camera";
 import { LayerStack, AlphaLayer } from "./LayerSystem";
 import { ColorSystem, ColorGroup } from "./ColorSystem";
+import { DOFSystem, DOFStop } from "./DOFSystem";
 import { ErosionSimulationMultiPass as ErosionSimulation } from "../simulation/ErosionSimulation.multipass.js";
 
 /**
@@ -13,6 +14,9 @@ export class Settings {
   
   // Color system for terrain coloration
   public colorSystem: ColorSystem;
+  
+  // DOF system for camera distance-based depth of field
+  public dofSystem: DOFSystem;
 
   // Rendering settings
   public rendering = {
@@ -82,8 +86,8 @@ export class Settings {
 
   // Depth of Field settings
   public depthOfField = {
-    enabled: false,
-    focalDepth: 15.0,       // Distance from camera where objects are sharp
+    enabled: true,
+    focalDepth: 0.0,        // Relative offset from camera (0 = camera distance)
     focalRange: 1.0,        // Range that stays sharp (smaller = tighter focus)
     blurStrength: 2.0,      // Far blur strength
     nearBlurStrength: 2.0,  // Near blur strength
@@ -103,12 +107,15 @@ export class Settings {
   private layerFolders: Map<string, GUI> = new Map();
   private colorGroupsFolder?: GUI;
   private colorGroupFolders: Map<string, GUI> = new Map();
+  private dofStopsFolder?: GUI;
+  private dofStopFolders: Map<string, GUI> = new Map();
 
   constructor(camera?: OrbitCamera, erosionSimulation?: ErosionSimulation) {
     this.cameraInstance = camera;
     this.erosionSimulation = erosionSimulation;
     this.layerStack = new LayerStack();
     this.colorSystem = new ColorSystem();
+    this.dofSystem = new DOFSystem();
     
     // Create GUI without localStorage persistence to always use code defaults
     this.gui = new GUI({ 
@@ -119,6 +126,7 @@ export class Settings {
     this.setupGUI();
     this.setupLayerCallbacks();
     this.setupColorCallbacks();
+    this.setupDOFCallbacks();
   }
 
   private setupGUI(): void {
@@ -236,39 +244,8 @@ export class Settings {
       .name("Light Z");
     lightingFolder.close();
 
-    // Depth of Field settings
-    const dofFolder = this.gui.addFolder("📷 Depth of Field");
-    dofFolder
-      .add(this.depthOfField, "enabled")
-      .name("Enable DOF")
-      .onChange(() => {
-        // DOF will be applied in render loop
-      });
-    dofFolder
-      .add(this.depthOfField, "focalDepth", 0.0, 25.0, 0.1)
-      .name("Focal Distance")
-      .onChange(() => {
-        // Update in real-time
-      });
-    dofFolder
-      .add(this.depthOfField, "focalRange", 0.1, 5.0, 0.1)
-      .name("Focus Range")
-      .onChange(() => {
-        // Update in real-time
-      });
-    dofFolder
-      .add(this.depthOfField, "blurStrength", 0.0, 3.0, 0.1)
-      .name("Far Blur Strength")
-      .onChange(() => {
-        // Update in real-time
-      });
-    dofFolder
-      .add(this.depthOfField, "nearBlurStrength", 0.0, 3.0, 0.1)
-      .name("Near Blur Strength")
-      .onChange(() => {
-        // Update in real-time
-      });
-    dofFolder.close();
+    // DOF Stops system
+    this.setupDOFStopsGUI();
 
     // Erosion simulation controls
     if (this.erosionSimulation) {
@@ -877,6 +854,128 @@ export class Settings {
     };
     folder.add(groupControls, "remove").name("🗑️ Remove Group");
 
+    folder.close();
+  }
+
+  // DOF Stop System Management
+  private setupDOFCallbacks(): void {
+    this.dofSystem.onChange(() => {
+      // DOF changes don't require terrain regeneration, just visual update
+    });
+  }
+
+  private setupDOFStopsGUI(): void {
+    this.dofStopsFolder = this.gui.addFolder("📷 DOF Stops");
+    
+    // DOF enabled toggle
+    this.dofStopsFolder
+      .add(this.depthOfField, "enabled")
+      .name("Enable DOF")
+      .onChange(() => {
+        console.log('DOF enabled:', this.depthOfField.enabled);
+      });
+    
+    // Add button for new DOF stop
+    const controls = {
+      addStop: () => this.addDOFStop(),
+    };
+    this.dofStopsFolder.add(controls, "addStop").name("➕ Add DOF Stop");
+    
+    this.refreshDOFStopsGUI();
+    this.dofStopsFolder.close();
+  }
+
+  private addDOFStop(): void {
+    const stops = this.dofSystem.getAllStops();
+    const newDistance = stops.length > 0 
+      ? Math.min(stops[stops.length - 1].cameraDistance + 3.0, 25.0)
+      : 15.0;
+      
+    this.dofSystem.addStop({
+      cameraDistance: newDistance,
+      focalOffset: 0.0,
+      focalRange: 2.0,
+      blurStrength: 2.0,
+      nearBlurStrength: 2.0,
+    });
+    
+    this.refreshDOFStopsGUI();
+  }
+
+  private refreshDOFStopsGUI(): void {
+    if (!this.dofStopsFolder) return;
+
+    // Remove all existing folders
+    this.dofStopFolders.forEach((folder) => folder.destroy());
+    this.dofStopFolders.clear();
+
+    // Add folders for all current stops
+    const stops = this.dofSystem.getAllStops();
+    stops.forEach((stop, index) => {
+      this.createDOFStopFolder(stop, index);
+    });
+  }
+
+  private createDOFStopFolder(stop: DOFStop, index: number): void {
+    if (!this.dofStopsFolder) return;
+
+    const folder = this.dofStopsFolder.addFolder(
+      `Stop ${index + 1} @ ${stop.cameraDistance.toFixed(1)}m`
+    );
+    this.dofStopFolders.set(stop.id, folder);
+
+    // Stop controls
+    folder
+      .add(stop, "enabled")
+      .name("Enabled")
+      .onChange(() => {
+        this.dofSystem.updateStop(stop.id, { enabled: stop.enabled });
+      });
+
+    folder
+      .add(stop, "cameraDistance", 10.0, 25.0, 0.1)
+      .name("Camera Distance")
+      .onChange(() => {
+        this.dofSystem.updateStop(stop.id, { cameraDistance: stop.cameraDistance });
+      });
+
+    folder
+      .add(stop, "focalOffset", -10.0, 10.0, 0.1)
+      .name("Focal Offset")
+      .onChange(() => {
+        this.dofSystem.updateStop(stop.id, { focalOffset: stop.focalOffset });
+      });
+
+    folder
+      .add(stop, "focalRange", 0.1, 10.0, 0.1)
+      .name("Focus Range")
+      .onChange(() => {
+        this.dofSystem.updateStop(stop.id, { focalRange: stop.focalRange });
+      });
+
+    folder
+      .add(stop, "blurStrength", 0.0, 5.0, 0.1)
+      .name("Far Blur")
+      .onChange(() => {
+        this.dofSystem.updateStop(stop.id, { blurStrength: stop.blurStrength });
+      });
+
+    folder
+      .add(stop, "nearBlurStrength", 0.0, 5.0, 0.1)
+      .name("Near Blur")
+      .onChange(() => {
+        this.dofSystem.updateStop(stop.id, { nearBlurStrength: stop.nearBlurStrength });
+      });
+
+    const removeControl = {
+      remove: () => {
+        if (confirm(`Remove DOF stop at ${stop.cameraDistance.toFixed(1)}m?`)) {
+          this.dofSystem.removeStop(stop.id);
+          this.refreshDOFStopsGUI();
+        }
+      },
+    };
+    folder.add(removeControl, "remove").name("🗑️ Remove");
     folder.close();
   }
 

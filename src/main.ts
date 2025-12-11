@@ -529,6 +529,9 @@ async function init() {
 
       // Apply depth of field if enabled
       if (settings.depthOfField.enabled) {
+        // Get interpolated DOF settings based on current camera distance
+        const interpolated = settings.dofSystem.interpolateSettings(camera.getDistance());
+        
         dofPass.apply(
           commandEncoder,
           offscreenTexture,
@@ -536,8 +539,13 @@ async function init() {
           dofOutputTexture,
           {
             ...settings.depthOfField,
+            focalDepth: interpolated.focalOffset,
+            focalRange: interpolated.focalRange,
+            blurStrength: interpolated.blurStrength,
+            nearBlurStrength: interpolated.nearBlurStrength,
             cameraNear: camera.near,
             cameraFar: camera.far,
+            cameraDistance: camera.getDistance(),
           }
         );
 
