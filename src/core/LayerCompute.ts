@@ -25,7 +25,7 @@ export class LayerCompute {
   private imageTextureArray: GPUTexture;
   private imageSampler: GPUSampler;
   private bindGroup: GPUBindGroup;
-  private readonly textureSize = 1024; // Increased from 512 for better detail
+  private readonly textureSize = 2048; // High resolution for detailed terrain
   private readonly maxLayers = 5;
   private readonly maxImageLayers = 4; // Reserve some slots for image textures
 
