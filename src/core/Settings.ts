@@ -132,10 +132,6 @@ export class Settings {
       });
     vizFolder.add(this.visualization, "disableDisplacement").name("Flat View");
     vizFolder
-      .add(this.terrain, "baseHeight", 0.0, 1.0, 0.05)
-      .name("Base Height")
-      .onChange(() => this.triggerRegenerate());
-    vizFolder
       .add(this.terrain, "meshResolution", 4, 15, 1)
       .name("Mesh Resolution")
       .onChange(() => this.triggerRegenerate());
