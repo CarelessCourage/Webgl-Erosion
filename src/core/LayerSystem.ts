@@ -44,6 +44,23 @@ export interface ImageLayer extends BaseLayer {
 
 export type AlphaLayer = NoiseLayer | CircleLayer | ImageLayer;
 
+// ============================================================================
+// DEFAULT LAYER SETTINGS - Edit these to change initial terrain appearance
+// ============================================================================
+const DEFAULT_BASE_LAYER = {
+  name: "Base Terrain",
+  enabled: true,
+  strength: 4.6,     // Layer opacity/influence (0-2)
+  blendMode: "add" as BlendMode,
+  scale: 4.6,        // Noise scale (higher = more detail)
+  octaves: 7,        // Number of noise layers
+  persistence: 0.45, // How much each octave contributes
+  lacunarity: 2.0,   // Frequency multiplier between octaves
+  amplitude: 1.9,    // Overall height multiplier
+  seed: 14426,       // Random seed for reproducibility
+};
+// ============================================================================
+
 export class LayerStack {
   private layers: AlphaLayer[] = [];
   private nextId = 0;
@@ -51,17 +68,10 @@ export class LayerStack {
   private onChangeCallback?: () => void;
 
   constructor() {
-    // Initialize with default noise layer (converted from old terrain settings)
-    this.addNoiseLayer({
-      name: "Base Terrain",
-      scale: 4.0,
-      octaves: 4,
-      persistence: 0.5,
-      lacunarity: 2.0,
-      amplitude: 0.5,
-      seed: 12345,
-    });
+    // Initialize with default base layer
+    this.addNoiseLayer(DEFAULT_BASE_LAYER);
     console.log("LayerStack initialized with", this.getLayerCount(), "layers");
+    console.log("Base layer values:", this.layers[0]);
   }
 
   addNoiseLayer(params: Partial<NoiseLayer> = {}): NoiseLayer | null {

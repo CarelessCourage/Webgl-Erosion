@@ -191,11 +191,14 @@ async function init() {
     console.log("✓ WebGPU initialization successful!");
     console.log("✓ Camera controls active");
 
-    // Create terrain geometry
+    // Create settings panel first to get configuration
+    const settings = new Settings(camera);
+    
+    // Create terrain geometry with settings resolution
     const planeGeometry = createPlane(
       vec3.fromValues(0, 0, 0), // center
       [10, 10], // scale
-      10 // subdivisions (2^(10/2) = 32x32 grid = 1024 vertices)
+      settings.visualization.meshResolution // subdivisions
     );
 
     console.log("Plane bounds:", {
@@ -206,9 +209,6 @@ async function init() {
       vertices: planeGeometry.vertexCount,
       triangles: planeGeometry.indexCount / 3,
     });
-
-    // Create settings panel first to get configuration
-    const settings = new Settings(camera);
     
     // Create layer compute system early (needed by TerrainRenderer)
     console.log("Initializing layer compute system...");
@@ -236,7 +236,7 @@ async function init() {
     terrainRenderer.setLayerCompute(layerCompute);
     console.log("🔗 Connected erosion system to terrain renderer");
 
-    let currentMeshResolution = settings.terrain.meshResolution;
+    let currentMeshResolution = settings.visualization.meshResolution;
     let currentTextureResolution = settings.visualization.textureResolution;
 
     settings.onRegenerate(async () => {
@@ -258,15 +258,15 @@ async function init() {
       }
       
       // Check if mesh resolution changed
-      if (settings.terrain.meshResolution !== currentMeshResolution) {
-        currentMeshResolution = settings.terrain.meshResolution;
+      if (settings.visualization.meshResolution !== currentMeshResolution) {
+        currentMeshResolution = settings.visualization.meshResolution;
         const newGeometry = createPlane(
           vec3.fromValues(0, 0, 0),
           [10, 10],
-          settings.terrain.meshResolution
+          settings.visualization.meshResolution
         );
         console.log("Mesh updated:", {
-          resolution: settings.terrain.meshResolution,
+          resolution: settings.visualization.meshResolution,
           vertices: newGeometry.vertexCount,
           triangles: newGeometry.indexCount / 3,
         });

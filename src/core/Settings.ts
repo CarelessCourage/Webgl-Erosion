@@ -14,19 +14,6 @@ export class Settings {
   // Color system for terrain coloration
   public colorSystem: ColorSystem;
 
-  // Legacy terrain settings (will be removed after migration)
-  public terrain = {
-    seed: 14426,
-    scale: 3.9,
-    octaves: 5,
-    persistence: 0.55,
-    lacunarity: 1.6,
-    amplitude: 0.4,
-    baseHeight: 0.3,
-    meshResolution: 15, // Higher resolution for smoother terrain (32x32 grid)
-    randomizeSeed: () => this.randomizeSeed(),
-  };
-
   // Rendering settings
   public rendering = {
     wireframe: false,
@@ -38,6 +25,7 @@ export class Settings {
     mode: "terrain", // 'terrain' or 'heightmap'
     disableDisplacement: false,
     textureResolution: 2048, // Height texture resolution (512, 1024, 2048, 4096)
+    meshResolution: 18, // Mesh detail level (4-25)
   };
 
   // Camera settings
@@ -121,7 +109,13 @@ export class Settings {
     this.erosionSimulation = erosionSimulation;
     this.layerStack = new LayerStack();
     this.colorSystem = new ColorSystem();
-    this.gui = new GUI({ title: "Terrain Controls", width: 300 });
+    
+    // Create GUI without localStorage persistence to always use code defaults
+    this.gui = new GUI({ 
+      title: "Terrain Controls", 
+      width: 300
+    });
+    
     this.setupGUI();
     this.setupLayerCallbacks();
     this.setupColorCallbacks();
@@ -143,7 +137,7 @@ export class Settings {
       });
     vizFolder.add(this.visualization, "disableDisplacement").name("Flat View");
     vizFolder
-      .add(this.terrain, "meshResolution", 4, 25, 1)
+      .add(this.visualization, "meshResolution", 4, 25, 1)
       .name("Mesh Resolution")
       .onChange(() => this.triggerRegenerate());
     vizFolder
@@ -305,22 +299,6 @@ export class Settings {
     }
   }
 
-  private randomizeSeed(): void {
-    this.terrain.seed = Math.floor(Math.random() * 99999);
-    // Force refresh of all GUI controllers
-    this.refreshGUI();
-    this.triggerRegenerate();
-  }
-
-  private refreshGUI(): void {
-    // lil-gui doesn't have updateDisplay, we need to manually refresh controllers
-    this.gui.controllersRecursive().forEach((controller) => {
-      if ("updateDisplay" in controller) {
-        (controller as any).updateDisplay();
-      }
-    });
-  }
-
   private setupLayerCallbacks(): void {
     this.layerStack.onChange(() => {
       this.triggerRegenerate();
@@ -476,7 +454,7 @@ export class Settings {
       });
 
     folder
-      .add(controls, "strength", 0, 2, 0.1)
+      .add(controls, "strength", 0, 5, 0.1)
       .name("Strength")
       .onChange((value: number) => {
         this.layerStack.updateLayer(layer.id, { strength: value });
