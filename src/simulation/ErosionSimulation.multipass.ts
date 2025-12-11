@@ -479,6 +479,15 @@ export class ErosionSimulationMultiPass {
     this.parameters.depositionConstant = value;
   }
 
+  public setLayerCompute(layerCompute: LayerCompute) {
+    console.log("🔄 Updating LayerCompute reference");
+    this.layerCompute = layerCompute;
+    // Reinitialize terrain with new layer compute if simulation is running
+    if (this.terrainInitialized) {
+      console.log("⚠️ Terrain was previously initialized - you may need to reset the simulation");
+    }
+  }
+
   // Additional methods required by Settings interface
   public async initializeTerrain(layerStack: LayerStack) {
     console.log("Multi-pass: Baking procedural layers into height texture for erosion...");

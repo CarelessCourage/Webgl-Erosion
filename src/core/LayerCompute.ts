@@ -25,12 +25,13 @@ export class LayerCompute {
   private imageTextureArray: GPUTexture;
   private imageSampler: GPUSampler;
   private bindGroup: GPUBindGroup;
-  private readonly textureSize = 2048; // High resolution for detailed terrain
+  private textureSize: number = 2048; // Default high resolution
   private readonly maxLayers = 5;
   private readonly maxImageLayers = 4; // Reserve some slots for image textures
 
-  constructor(gpuContext: GPUContext) {
+  constructor(gpuContext: GPUContext, textureSize: number = 2048) {
     this.gpuContext = gpuContext;
+    this.textureSize = textureSize;
 
     console.log("Creating LayerCompute pipeline...");
 

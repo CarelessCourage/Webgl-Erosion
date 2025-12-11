@@ -218,23 +218,45 @@ async function init() {
     );
     console.log("🔍 GPU Device Limits:", gpuContext.device.limits);
 
-    const layerCompute = new LayerCompute(gpuContext);
+    // Create settings panel first (with default values)
+    const settings = new Settings(camera);
+    
+    // Now create LayerCompute with resolution from settings
+    const layerCompute = new LayerCompute(gpuContext, settings.visualization.textureResolution);
     console.log("✅ LayerCompute created successfully");
 
     console.log("🚀 About to create ErosionSimulation...");
     const erosionSimulation = new ErosionSimulation(gpuContext, layerCompute);
     console.log("✓ Erosion simulation initialized");
+    
+    // Set erosion simulation reference in settings after it's created
+    settings.erosionSimulation = erosionSimulation;
 
     // Connect erosion system to terrain renderer for height texture sampling
     terrainRenderer.setLayerCompute(layerCompute);
     console.log("🔗 Connected erosion system to terrain renderer");
 
-    // Create settings panel with camera reference and erosion simulation
-    const settings = new Settings(camera, erosionSimulation);
-
     let currentMeshResolution = settings.terrain.meshResolution;
+    let currentTextureResolution = settings.visualization.textureResolution;
 
     settings.onRegenerate(async () => {
+      // Check if texture resolution changed - requires recreating LayerCompute
+      if (settings.visualization.textureResolution !== currentTextureResolution) {
+        currentTextureResolution = settings.visualization.textureResolution;
+        console.log(`🔄 Recreating LayerCompute with resolution ${currentTextureResolution}x${currentTextureResolution}`);
+        
+        // Create new LayerCompute with new resolution
+        const newLayerCompute = new LayerCompute(gpuContext, currentTextureResolution);
+        
+        // Update erosion simulation with new layer compute
+        erosionSimulation.setLayerCompute(newLayerCompute);
+        
+        // Update terrain renderer
+        terrainRenderer.setLayerCompute(newLayerCompute);
+        
+        console.log("✓ LayerCompute recreated with new resolution");
+      }
+      
       // Check if mesh resolution changed
       if (settings.terrain.meshResolution !== currentMeshResolution) {
         currentMeshResolution = settings.terrain.meshResolution;

@@ -33,6 +33,7 @@ export class Settings {
   public visualization = {
     mode: "terrain", // 'terrain' or 'heightmap'
     disableDisplacement: false,
+    textureResolution: 2048, // Height texture resolution (512, 1024, 2048, 4096)
   };
 
   // Camera settings
@@ -104,7 +105,7 @@ export class Settings {
   ) => void;
   private colorFolder?: GUI;
   private cameraInstance?: OrbitCamera;
-  private erosionSimulation?: ErosionSimulation;
+  public erosionSimulation?: ErosionSimulation; // Made public so it can be set after construction
   private layersFolder?: GUI;
   private layerFolders: Map<string, GUI> = new Map();
 
@@ -135,6 +136,10 @@ export class Settings {
     vizFolder
       .add(this.terrain, "meshResolution", 4, 15, 1)
       .name("Mesh Resolution")
+      .onChange(() => this.triggerRegenerate());
+    vizFolder
+      .add(this.visualization, "textureResolution", [512, 1024, 2048, 4096])
+      .name("Texture Resolution")
       .onChange(() => this.triggerRegenerate());
     vizFolder.close();
 
