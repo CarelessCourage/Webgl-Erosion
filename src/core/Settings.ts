@@ -48,7 +48,7 @@ export class Settings {
 
   // Color settings
   public colors = {
-    lowColor: "#429a42", // Green (66, 154, 66)
+    lowColor: "#3f5a30", // Green (66, 154, 66)
     midColor: "#565048", // Brown (140, 100, 50)
     highColor: "#fafafa", // Light gray (153, 153, 153)
     bottomColor: "#e5c29f", // Dark brown (40, 30, 20)
@@ -134,7 +134,7 @@ export class Settings {
       });
     vizFolder.add(this.visualization, "disableDisplacement").name("Flat View");
     vizFolder
-      .add(this.terrain, "meshResolution", 4, 15, 1)
+      .add(this.terrain, "meshResolution", 4, 25, 1)
       .name("Mesh Resolution")
       .onChange(() => this.triggerRegenerate());
     vizFolder
