@@ -83,10 +83,10 @@ export class Settings {
   // Depth of Field settings
   public depthOfField = {
     enabled: false,
-    focalDepth: 17.5,       // Middle of camera range (10-25)
-    focalRange: 3.0,        // Range that stays sharp
-    blurStrength: 1.0,      // Far blur strength
-    nearBlurStrength: 0.8,  // Near blur strength
+    focalDepth: 15.0,       // Distance from camera where objects are sharp
+    focalRange: 1.0,        // Range that stays sharp (smaller = tighter focus)
+    blurStrength: 2.0,      // Far blur strength
+    nearBlurStrength: 2.0,  // Near blur strength
   };
 
   private gui: GUI;
@@ -245,13 +245,13 @@ export class Settings {
         // DOF will be applied in render loop
       });
     dofFolder
-      .add(this.depthOfField, "focalDepth", 10.0, 25.0, 0.5)
+      .add(this.depthOfField, "focalDepth", 0.0, 25.0, 0.1)
       .name("Focal Distance")
       .onChange(() => {
         // Update in real-time
       });
     dofFolder
-      .add(this.depthOfField, "focalRange", 0.5, 10.0, 0.5)
+      .add(this.depthOfField, "focalRange", 0.1, 5.0, 0.1)
       .name("Focus Range")
       .onChange(() => {
         // Update in real-time

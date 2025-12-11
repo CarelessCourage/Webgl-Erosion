@@ -6,6 +6,8 @@ export interface DOFSettings {
     focalRange: number;      // Range around focal depth that stays sharp
     blurStrength: number;    // Maximum blur for far objects
     nearBlurStrength: number; // Blur strength for near objects
+    cameraNear?: number;     // Camera near plane (default: 0.01)
+    cameraFar?: number;      // Camera far plane (default: 500)
 }
 
 export class DepthOfFieldPass {
@@ -29,9 +31,9 @@ export class DepthOfFieldPass {
         
         // Create uniform buffer for DOF parameters
         // Layout: focalDepth(4) + focalRange(4) + blurStrength(4) + nearBlurStrength(4) + 
-        //         enabled(4) + padding1(4) + direction(8) = 32 bytes
+        //         enabled(4) + cameraNear(4) + cameraFar(4) + padding(4) + direction(8) = 40 bytes
         this.uniformBuffer = device.createBuffer({
-            size: 32,
+            size: 48, // Increased from 32 to 48 for camera params
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         
@@ -83,13 +85,16 @@ export class DepthOfFieldPass {
      * Update DOF uniform parameters
      */
     public updateSettings(settings: DOFSettings): void {
-        const data = new Float32Array(8);
+        const data = new Float32Array(12); // Increased from 8 to 12
         data[0] = settings.focalDepth;
         data[1] = settings.focalRange;
         data[2] = settings.blurStrength;
         data[3] = settings.nearBlurStrength;
         data[4] = settings.enabled ? 1.0 : 0.0;
-        // direction will be set per-pass
+        data[5] = settings.cameraNear ?? 0.01; // Camera near plane
+        data[6] = settings.cameraFar ?? 500;    // Camera far plane
+        // data[7] is padding
+        // data[8-9] will be direction (set per-pass)
         
         this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
     }
@@ -173,11 +178,11 @@ export class DepthOfFieldPass {
     }
     
     /**
-     * Update blur direction in uniform buffer (offset 24 bytes)
+     * Update blur direction in uniform buffer (offset 32 bytes, after 8 floats)
      */
     private updateDirection(passIndex: number, x: number, y: number): void {
         const data = new Float32Array([x, y]);
-        this.device.queue.writeBuffer(this.uniformBuffer, 24, data);
+        this.device.queue.writeBuffer(this.uniformBuffer, 32, data); // Changed from 24 to 32
     }
     
     /**

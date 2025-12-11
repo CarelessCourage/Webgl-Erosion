@@ -534,7 +534,11 @@ async function init() {
           offscreenTexture,
           depthTexture,
           dofOutputTexture,
-          settings.depthOfField
+          {
+            ...settings.depthOfField,
+            cameraNear: camera.near,
+            cameraFar: camera.far,
+          }
         );
 
         // Use blit pass to copy RGBA to BGRA canvas

@@ -5,6 +5,8 @@ struct DOFUniforms {
     blurStrength: f32,      // Maximum blur radius
     nearBlurStrength: f32,  // Blur strength for near objects
     enabled: f32,           // 1.0 = enabled, 0.0 = disabled
+    cameraNear: f32,        // Camera near clipping plane
+    cameraFar: f32,         // Camera far clipping plane
     _padding1: f32,         // Padding before vec2 (8-byte alignment)
     direction: vec2<f32>,   // (1,0) for horizontal, (0,1) for vertical
 }
@@ -31,14 +33,19 @@ fn linearizeDepth(depth: f32, near: f32, far: f32) -> f32 {
 
 // Calculate circle of confusion (blur amount) based on depth
 fn calculateCoC(depth: f32) -> f32 {
-    let near = 10.0;  // Match camera min distance
-    let far = 25.0;   // Match camera max distance
+    // Use camera near/far planes from uniforms
+    let near = uniforms.cameraNear;
+    let far = uniforms.cameraFar;
     
-    // Convert depth to linear distance
+    // Convert depth buffer value to linear view-space distance
     let linearDepth = linearizeDepth(depth, near, far);
     
+    // Clamp linear depth to reasonable range for debugging
+    // Most of terrain should be between 10-25 units from camera
+    let clampedDepth = clamp(linearDepth, 0.01, 100.0);
+    
     // Distance from focal plane
-    let distanceFromFocus = abs(linearDepth - uniforms.focalDepth);
+    let distanceFromFocus = abs(clampedDepth - uniforms.focalDepth);
     
     // If within focus range, no blur
     if (distanceFromFocus < uniforms.focalRange) {
@@ -50,12 +57,12 @@ fn calculateCoC(depth: f32) -> f32 {
     
     // Determine which blur strength to use
     var blur = 0.0;
-    if (linearDepth < uniforms.focalDepth) {
+    if (clampedDepth < uniforms.focalDepth) {
         // Near blur (in front of focal plane)
-        blur = min(blurDistance / 5.0, 1.0) * uniforms.nearBlurStrength;
+        blur = min(blurDistance / 2.0, 1.0) * uniforms.nearBlurStrength;
     } else {
-        // Far blur (behind focal plane)
-        blur = min(blurDistance / 5.0, 1.0) * uniforms.blurStrength;
+        // Far blur (behind focal plane) 
+        blur = min(blurDistance / 2.0, 1.0) * uniforms.blurStrength;
     }
     
     return blur;
