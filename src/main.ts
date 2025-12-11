@@ -3,6 +3,8 @@ import { OrbitCamera } from "./core/Camera";
 import { Settings } from "./core/Settings";
 import { LayerCompute } from "./core/LayerCompute";
 import { ErosionSimulationMultiPass as ErosionSimulation } from "./simulation/ErosionSimulation.multipass.js";
+import { DepthOfFieldPass } from "./rendering/DepthOfFieldPass";
+import { BlitPass } from "./rendering/BlitPass";
 import { vec3, mat4 } from "gl-matrix";
 import { createPlane } from "./geometry/Plane";
 import { TerrainRenderer } from "./rendering/TerrainRenderer";
@@ -269,11 +271,34 @@ async function init() {
     await terrainRenderer.generateTerrainFromLayers(settings.layerStack);
     console.log("✓ Initial terrain generated from layers");
 
+    // Create depth of field pass
+    const dofPass = new DepthOfFieldPass(gpuContext.device);
+    dofPass.resize(canvas.width, canvas.height);
+    console.log("✓ Depth of Field pass initialized");
+
+    // Create blit pass for final texture copy (RGBA -> BGRA)
+    const blitPass = new BlitPass(gpuContext.device, 'bgra8unorm');
+    console.log("✓ Blit pass initialized");
+
     // Create depth texture
     let depthTexture = gpuContext.device.createTexture({
       size: { width: canvas.width, height: canvas.height },
       format: "depth24plus",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    // Create offscreen color texture for DOF (bgra8unorm to match pipeline)
+    let offscreenTexture = gpuContext.device.createTexture({
+      size: { width: canvas.width, height: canvas.height },
+      format: "bgra8unorm",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    // Create persistent DOF output texture (RGBA storage)
+    let dofOutputTexture = gpuContext.device.createTexture({
+      size: { width: canvas.width, height: canvas.height },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     });
 
     // Handle window resize
@@ -285,8 +310,24 @@ async function init() {
       depthTexture = gpuContext.device.createTexture({
         size: { width: canvas.width, height: canvas.height },
         format: "depth24plus",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
+      // Recreate offscreen texture on resize
+      offscreenTexture.destroy();
+      offscreenTexture = gpuContext.device.createTexture({
+        size: { width: canvas.width, height: canvas.height },
+        format: "bgra8unorm",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      // Recreate DOF output texture on resize
+      dofOutputTexture.destroy();
+      dofOutputTexture = gpuContext.device.createTexture({
+        size: { width: canvas.width, height: canvas.height },
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      // Resize DOF pass
+      dofPass.resize(canvas.width, canvas.height);
       camera.setAspectRatio(canvas.width / canvas.height);
     };
 
@@ -422,13 +463,17 @@ async function init() {
       //     shadowPass.end();
       // }
 
-      // Second pass: Render main scene
-      const textureView = gpuContext.context.getCurrentTexture().createView();
+      // Determine render target based on DOF setting
+      const finalTextureView = gpuContext.context.getCurrentTexture().createView();
+      const renderTargetView = settings.depthOfField.enabled 
+        ? offscreenTexture.createView() 
+        : finalTextureView;
 
+      // Main scene render pass
       const renderPass = commandEncoder.beginRenderPass({
         colorAttachments: [
           {
-            view: textureView,
+            view: renderTargetView,
             clearValue: {
               r: hexToRgb(settings.colors.backgroundColor)[0] / 255,
               g: hexToRgb(settings.colors.backgroundColor)[1] / 255,
@@ -451,6 +496,20 @@ async function init() {
       terrainRenderer.render(renderPass);
 
       renderPass.end();
+
+      // Apply depth of field if enabled
+      if (settings.depthOfField.enabled) {
+        dofPass.apply(
+          commandEncoder,
+          offscreenTexture,
+          depthTexture,
+          dofOutputTexture,
+          settings.depthOfField
+        );
+
+        // Use blit pass to copy RGBA to BGRA canvas
+        blitPass.blit(commandEncoder, dofOutputTexture, finalTextureView);
+      }
 
       const commandBuffer = commandEncoder.finish();
       gpuContext.device.queue.submit([commandBuffer]);

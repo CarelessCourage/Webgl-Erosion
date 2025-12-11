@@ -87,6 +87,15 @@ export class Settings {
     },
   };
 
+  // Depth of Field settings
+  public depthOfField = {
+    enabled: false,
+    focalDepth: 17.5,       // Middle of camera range (10-25)
+    focalRange: 3.0,        // Range that stays sharp
+    blurStrength: 1.0,      // Far blur strength
+    nearBlurStrength: 0.8,  // Near blur strength
+  };
+
   private gui: GUI;
   private onRegenerateCallback?: () => Promise<void> | void;
   private onImageUploadCallback?: (
@@ -123,10 +132,13 @@ export class Settings {
       });
     vizFolder.add(this.visualization, "disableDisplacement").name("Flat View");
     vizFolder
+      .add(this.terrain, "baseHeight", 0.0, 1.0, 0.05)
+      .name("Base Height")
+      .onChange(() => this.triggerRegenerate());
+    vizFolder
       .add(this.terrain, "meshResolution", 4, 15, 1)
       .name("Mesh Resolution")
       .onChange(() => this.triggerRegenerate());
-    vizFolder.open();
     vizFolder.open();
 
     // Camera controls folder
@@ -213,6 +225,39 @@ export class Settings {
       .add(this.lighting.lightDirection, "z", -1.0, 1.0, 0.1)
       .name("Light Z");
     lightingFolder.open();
+
+    // Depth of Field settings
+    const dofFolder = this.gui.addFolder("📷 Depth of Field");
+    dofFolder
+      .add(this.depthOfField, "enabled")
+      .name("Enable DOF")
+      .onChange(() => {
+        // DOF will be applied in render loop
+      });
+    dofFolder
+      .add(this.depthOfField, "focalDepth", 10.0, 25.0, 0.5)
+      .name("Focal Distance")
+      .onChange(() => {
+        // Update in real-time
+      });
+    dofFolder
+      .add(this.depthOfField, "focalRange", 0.5, 10.0, 0.5)
+      .name("Focus Range")
+      .onChange(() => {
+        // Update in real-time
+      });
+    dofFolder
+      .add(this.depthOfField, "blurStrength", 0.0, 3.0, 0.1)
+      .name("Far Blur Strength")
+      .onChange(() => {
+        // Update in real-time
+      });
+    dofFolder
+      .add(this.depthOfField, "nearBlurStrength", 0.0, 3.0, 0.1)
+      .name("Near Blur Strength")
+      .onChange(() => {
+        // Update in real-time
+      });
 
     // Erosion simulation controls
     if (this.erosionSimulation) {
@@ -373,7 +418,7 @@ export class Settings {
     if (!this.layersFolder) return;
 
     // Remove all existing layer folders
-    this.layerFolders.forEach((folder, layerId) => {
+    this.layerFolders.forEach((folder) => {
       folder.destroy();
     });
     this.layerFolders.clear();
