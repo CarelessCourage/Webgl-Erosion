@@ -295,6 +295,20 @@ export class LayerCompute {
   }
 
   /**
+   * Get the image texture array view for binding
+   */
+  public getImageTextureArrayView(): GPUTextureView {
+    return this.imageTextureArray.createView();
+  }
+
+  /**
+   * Get the image sampler for binding
+   */
+  public getImageSampler(): GPUSampler {
+    return this.imageSampler;
+  }
+
+  /**
    * Get texture size
    */
   public getTextureSize(): number {

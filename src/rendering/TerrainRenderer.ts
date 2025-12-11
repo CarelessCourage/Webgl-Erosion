@@ -54,13 +54,16 @@ export class TerrainRenderer {
   // Height texture sampling
   private layerCompute?: LayerCompute;
   private dummyTexture: GPUTexture;
+  private dummyTextureArray: GPUTexture;
+  private dummySampler: GPUSampler;
 
   // Bind group layout for reuse
   private bindGroupLayout: GPUBindGroupLayout;
 
-  constructor(gpuContext: GPUContext, geometry: PlaneGeometry) {
+  constructor(gpuContext: GPUContext, geometry: PlaneGeometry, layerCompute?: LayerCompute) {
     this.gpuContext = gpuContext;
     this.indexCount = geometry.indexCount;
+    this.layerCompute = layerCompute;
 
     // Create layer buffer for vertex shader
     this.layerBuffer = gpuContext.device.createBuffer({
@@ -131,6 +134,19 @@ export class TerrainRenderer {
       { width: 1, height: 1 }
     );
 
+    // Create dummy texture array for image layers
+    this.dummyTextureArray = gpuContext.device.createTexture({
+      size: { width: 1, height: 1, depthOrArrayLayers: 4 },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    // Create dummy sampler
+    this.dummySampler = gpuContext.device.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+    });
+
     // Create shader module
     const shaderModule = gpuContext.device.createShaderModule({
       label: "Terrain Shader",
@@ -176,6 +192,21 @@ export class TerrainRenderer {
           texture: {
             sampleType: "unfilterable-float",
             viewDimension: "2d",
+          },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          texture: {
+            sampleType: "float",
+            viewDimension: "2d-array",
+          },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          sampler: {
+            type: "filtering",
           },
         },
       ],
@@ -429,6 +460,14 @@ export class TerrainRenderer {
           binding: 2,
           resource: heightTexture.createView(),
         },
+        {
+          binding: 3,
+          resource: this.layerCompute ? this.layerCompute.getImageTextureArrayView() : this.dummyTextureArray.createView(),
+        },
+        {
+          binding: 4,
+          resource: this.layerCompute ? this.layerCompute.getImageSampler() : this.dummySampler,
+        },
       ],
     });
 
@@ -447,6 +486,14 @@ export class TerrainRenderer {
         {
           binding: 2,
           resource: heightTexture.createView(),
+        },
+        {
+          binding: 3,
+          resource: this.layerCompute ? this.layerCompute.getImageTextureArrayView() : this.dummyTextureArray.createView(),
+        },
+        {
+          binding: 4,
+          resource: this.layerCompute ? this.layerCompute.getImageSampler() : this.dummySampler,
         },
       ],
     });
@@ -656,7 +703,13 @@ export class TerrainRenderer {
    * Upload image data for use in image layers (placeholder for future implementation)
    */
   public uploadImageForLayer(imageData: ImageData, arrayIndex: number): void {
-    // TODO: Implement image layer support in vertex shader
-    console.warn("Image layers not yet supported in direct procedural mode");
+    if (!this.layerCompute) {
+      console.error("LayerCompute not initialized, cannot upload image");
+      return;
+    }
+    
+    console.log(`📸 Uploading image to texture array slot ${arrayIndex}`);
+    this.layerCompute.uploadImageToArray(imageData, arrayIndex);
+    console.log("✓ Image uploaded successfully");
   }
 }

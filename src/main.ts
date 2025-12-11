@@ -207,23 +207,23 @@ async function init() {
       triangles: planeGeometry.indexCount / 3,
     });
 
-    // Create terrain renderer
-    const terrainRenderer = new TerrainRenderer(gpuContext, planeGeometry);
-
-    // Create layer compute system for erosion simulation
-    console.log("Initializing layer compute and erosion simulation...");
+    // Create settings panel first to get configuration
+    const settings = new Settings(camera);
+    
+    // Create layer compute system early (needed by TerrainRenderer)
+    console.log("Initializing layer compute system...");
     console.log(
       "🔍 GPU Device Features:",
       Array.from(gpuContext.device.features)
     );
     console.log("🔍 GPU Device Limits:", gpuContext.device.limits);
-
-    // Create settings panel first (with default values)
-    const settings = new Settings(camera);
     
-    // Now create LayerCompute with resolution from settings
     const layerCompute = new LayerCompute(gpuContext, settings.visualization.textureResolution);
     console.log("✅ LayerCompute created successfully");
+
+    // Create terrain renderer with layerCompute
+    const terrainRenderer = new TerrainRenderer(gpuContext, planeGeometry, layerCompute);
+    console.log("🔗 TerrainRenderer created with LayerCompute");
 
     console.log("🚀 About to create ErosionSimulation...");
     const erosionSimulation = new ErosionSimulation(gpuContext, layerCompute);

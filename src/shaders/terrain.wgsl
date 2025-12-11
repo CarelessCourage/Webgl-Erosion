@@ -57,6 +57,8 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> layers: array<Layer>;
 @group(0) @binding(2) var heightTexture: texture_2d<f32>;
+@group(0) @binding(3) var imageTextures: texture_2d_array<f32>;
+@group(0) @binding(4) var imageSampler: sampler;
 
 // High quality hash function for procedural noise
 fn hash22(p: vec2f) -> vec2f {
@@ -169,6 +171,13 @@ fn evaluateCircleLayer(layer: Layer, uv: vec2f) -> f32 {
     }
 }
 
+fn evaluateImageLayer(layer: Layer, uv: vec2f) -> f32 {
+    let offsetUV = uv + vec2f(layer.offsetX, layer.offsetY);
+    let clampedUV = clamp(offsetUV, vec2f(0.0), vec2f(1.0));
+    let imageIndex = i32(layer.imageIndex);
+    return textureSampleLevel(imageTextures, imageSampler, clampedUV, imageIndex, 0.0).r;
+}
+
 // Blend mode functions
 fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
     let weightedOverlay = overlay * strength;
@@ -220,6 +229,9 @@ fn calculateHeight(uv: vec2f) -> f32 {
             }
             case 1: { // Circle
                 layerValue = evaluateCircleLayer(layer, uv);
+            }
+            case 2: { // Image
+                layerValue = evaluateImageLayer(layer, uv);
             }
             default: {
                 layerValue = 0.0;
