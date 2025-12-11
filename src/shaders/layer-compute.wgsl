@@ -107,13 +107,13 @@ fn evaluateNoiseLayer(layer: Layer, uv: vec2f) -> f32 {
         layer.seed
     );
     
-    // Match the original terrain generation exactly:
-    // height = baseHeight + (noiseValue * amplitude)
-    // Original uses baseHeight of 0.3, noise range [-1,1]
-    let baseHeight = 0.3;
-    let height = baseHeight + (noise * layer.amplitude);
+    // Normalize noise from [-1, 1] to [0, 1] range
+    // Then scale by amplitude to control intensity
+    let normalizedNoise = (noise + 1.0) * 0.5; // Convert [-1,1] to [0,1]
+    let height = normalizedNoise * layer.amplitude;
     
-    return clamp(height, 0.0, 1.0);
+    // Don't clamp here - allow values to accumulate beyond 1.0
+    return height;
 }
 
 fn evaluateCircleLayer(layer: Layer, uv: vec2f) -> f32 {
@@ -147,7 +147,7 @@ fn blendLayers(base: f32, overlay: f32, blendMode: u32, strength: f32) -> f32 {
     
     switch (blendMode) {
         case 0u: { // Add
-            return clamp(base + weightedOverlay, 0.0, 1.0);
+            return base + weightedOverlay;
         }
         case 1u: { // Mask (multiply base by overlay)
             return base * (weightedOverlay);
@@ -156,7 +156,7 @@ fn blendLayers(base: f32, overlay: f32, blendMode: u32, strength: f32) -> f32 {
             return base * mix(1.0, weightedOverlay, strength);
         }
         case 3u: { // Subtract
-            return clamp(base - weightedOverlay, 0.0, 1.0);
+            return max(base - weightedOverlay, 0.0);
         }
         default: {
             return base;

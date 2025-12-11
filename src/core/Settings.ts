@@ -121,6 +121,7 @@ export class Settings {
     // Layer management folder
     this.layersFolder = this.gui.addFolder("Terrain Layers");
     this.setupLayerControls();
+    this.layersFolder.close();
 
     // Visualization folder
     const vizFolder = this.gui.addFolder("Visualization");
@@ -135,7 +136,7 @@ export class Settings {
       .add(this.terrain, "meshResolution", 4, 15, 1)
       .name("Mesh Resolution")
       .onChange(() => this.triggerRegenerate());
-    vizFolder.open();
+    vizFolder.close();
 
     // Camera controls folder
     if (this.cameraInstance) {
@@ -176,6 +177,7 @@ export class Settings {
         .onChange((value: number) => {
           if (this.cameraInstance) this.cameraInstance.maxDistance = value;
         });
+      cameraFolder.close();
     }
 
     // Color settings folder
@@ -202,6 +204,7 @@ export class Settings {
       .addColor(this.colors, "backgroundColor")
       .name("Background Color");
     this.updateColorFolderVisibility();
+    this.colorFolder.close();
 
     // Lighting settings folder
     const lightingFolder = this.gui.addFolder("Lighting & Shadows");
@@ -220,7 +223,7 @@ export class Settings {
     lightingFolder
       .add(this.lighting.lightDirection, "z", -1.0, 1.0, 0.1)
       .name("Light Z");
-    lightingFolder.open();
+    lightingFolder.close();
 
     // Depth of Field settings
     const dofFolder = this.gui.addFolder("📷 Depth of Field");
@@ -254,6 +257,7 @@ export class Settings {
       .onChange(() => {
         // Update in real-time
       });
+    dofFolder.close();
 
     // Erosion simulation controls
     if (this.erosionSimulation) {
@@ -318,7 +322,6 @@ export class Settings {
 
     // Initial layer setup
     this.refreshLayerGUI();
-    this.layersFolder.open();
   }
 
   private addNoiseLayer(): void {
@@ -525,8 +528,7 @@ export class Settings {
     folder.add(controls, "moveUp").name("⬆️ Move Up");
     folder.add(controls, "moveDown").name("⬇️ Move Down");
     folder.add(controls, "remove").name("🗑️ Remove Layer");
-
-    folder.open();
+    folder.close();
   }
 
   private removeLayer(layerId: string): void {
@@ -566,7 +568,6 @@ export class Settings {
         this.colorFolder.domElement.style.display = "none";
       } else {
         this.colorFolder.domElement.style.display = "";
-        this.colorFolder.open();
       }
     }
   }
@@ -656,9 +657,12 @@ export class Settings {
           this.erosionSimulation.setDepositionConstant(value);
         }
       });
-
-    rainFolder.open();
-    erosionFolder.open();
+    
+    erosionFolder.close();
+    controlsFolder.close();
+    rainFolder.close();
+    instructions.close();
+    paramsFolder.close();
   }
 
   private startErosion(): void {

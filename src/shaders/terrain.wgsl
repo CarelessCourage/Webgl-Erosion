@@ -142,8 +142,13 @@ fn evaluateNoiseLayer(layer: Layer, uv: vec2f) -> f32 {
         layer.seed
     );
     
-    // Use full amplitude without adding base height
-    return clamp(noise * layer.amplitude, 0.0, 1.0);
+    // Normalize noise from [-1, 1] to [0, 1] range
+    // Then scale by amplitude to control intensity
+    let normalizedNoise = (noise + 1.0) * 0.5; // Convert [-1,1] to [0,1]
+    let height = normalizedNoise * layer.amplitude;
+    
+    // Don't clamp here - allow values to accumulate beyond 1.0
+    return height;
 }
 
 fn evaluateCircleLayer(layer: Layer, uv: vec2f) -> f32 {
@@ -171,16 +176,16 @@ fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
     let blendModeInt = i32(blendMode);
     switch (blendModeInt) {
         case 0: { // Add
-            return clamp(base + weightedOverlay, 0.0, 1.0);
+            return base + weightedOverlay;
         }
         case 1: { // Mask - overlay controls visibility of base
             return base * clamp(weightedOverlay, 0.0, 1.0);
         }
         case 2: { // Multiply - base and overlay multiply together
-            return clamp(base * overlay * strength, 0.0, 1.0);
+            return base * overlay * strength;
         }
         case 3: { // Subtract
-            return clamp(base - weightedOverlay, 0.0, 1.0);
+            return max(base - weightedOverlay, 0.0);
         }
         default: {
             return base;
@@ -230,7 +235,8 @@ fn calculateHeight(uv: vec2f) -> f32 {
         }
     }
     
-    return clamp(result, 0.0, 1.0);
+    // Don't clamp final result - allow accumulated heights beyond 1.0
+    return max(result, 0.0);
 }
 
 @vertex
