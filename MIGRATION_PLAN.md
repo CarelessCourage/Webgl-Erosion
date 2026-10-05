@@ -210,7 +210,10 @@ Heights and water are stored in "cell units" so simulated slopes match rendered 
 
 ### 7.3 Integration with Layer System ✅
 - `LayerCompute` bakes the layers (shared `layers.wgsl`) into a **base** texture and copies it to the **display** texture the renderer draws.
-- After each step, `export.wgsl` writes `base + erosion delta` (plus water/sediment in G/B) into the display texture at any texture resolution.
+- After each step, `export.wgsl` writes the display texture at any texture resolution:
+  R = `base + erosion delta`, G = water depth, B = flow paths (peak discharge so far), A = erosion delta.
+- These channels drive the erosion maps (Display Mode: Erosion / Deposition / Flow Paths / Water) and can be
+  used as a color group's Alpha Source, with "Alpha as Opacity" to paint only along paths or deposits.
 - When layers change, `rebase.wgsl` re-applies the carved delta onto the new base, so editing layers doesn't discard erosion.
 - `TerrainPicker` reads back a small height map so the rain brush (hold **C** + drag) lands where the mouse points.
 

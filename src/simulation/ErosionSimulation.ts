@@ -39,24 +39,27 @@ export interface ErosionParameters {
   brushStrength: number;
 }
 
-// Defaults follow the original WebGL implementation (src-old/main.ts).
+// Physics constants follow the original WebGL implementation (src-old/main.ts);
+// the sediment/water rates are tuned stronger so material visibly travels into
+// the valleys (more water + higher capacity/pickup moves more sediment, while a
+// moderate Kd keeps it in suspension long enough to form fans and deltas).
 export const DEFAULT_EROSION_PARAMETERS: ErosionParameters = {
   stepsPerFrame: 3,
   timeStep: 0.05,
   pipeLength: 0.8,
   pipeArea: 0.6,
   gravity: 0.8,
-  sedimentCapacity: 0.06,
-  dissolution: 0.036,
-  deposition: 0.006,
-  evaporation: 0.06,
+  sedimentCapacity: 0.25,
+  dissolution: 0.08,
+  deposition: 0.015,
+  evaporation: 0.03,
   minSlope: 0.1,
   velocityAdvection: 0.2,
   thermalRate: 0.5,
   talusAngle: 60,
   smoothThreshold: 0.1,
   globalRain: false,
-  rainRate: 0.02,
+  rainRate: 0.03,
   drainEdges: true,
   brushRadius: 0.04,
   brushStrength: 4.0,
@@ -94,6 +97,7 @@ export class ErosionSimulation {
   private velocity!: GPUTexture[]; // rg32float
   private sediment!: GPUTexture[]; // r32float
   private simBase!: GPUTexture[]; // r32float: base height the delta is relative to
+  private flowHistory!: GPUTexture[]; // r32float: peak discharge per cell (flow paths map)
   private advectA!: GPUTexture;
   private advectB!: GPUTexture;
   private thermalFlux!: GPUTexture;
@@ -125,7 +129,7 @@ export class ErosionSimulation {
   private advectBackwardBindGroups!: GPUBindGroup[];
   private macCormackBindGroups!: GPUBindGroup[];
   private rebaseBindGroup!: GPUBindGroup;
-  private exportBindGroup!: GPUBindGroup;
+  private exportBindGroups!: GPUBindGroup[];
 
   constructor(
     gpuContext: GPUContext,
@@ -253,6 +257,7 @@ export class ErosionSimulation {
       ...this.flux,
       ...this.velocity,
       ...this.sediment,
+      ...this.flowHistory,
       this.advectA,
       this.advectB,
       this.thermalFlux,
@@ -353,6 +358,7 @@ export class ErosionSimulation {
     this.velocity = pair("velocity", "rg32float");
     this.sediment = pair("sediment", "r32float");
     this.simBase = pair("base", "r32float");
+    this.flowHistory = pair("flow-history", "r32float");
     this.advectA = this.createTexture("advect-a", "r32float");
     this.advectB = this.createTexture("advect-b", "r32float");
     this.thermalFlux = this.createTexture("thermal-flux", "rgba32float");
@@ -365,6 +371,7 @@ export class ErosionSimulation {
       ...this.velocity,
       ...this.sediment,
       ...this.simBase,
+      ...this.flowHistory,
       this.advectA,
       this.advectB,
       this.thermalFlux,
@@ -395,7 +402,7 @@ export class ErosionSimulation {
    * Texture flow for one step (p = parity, q = 1 - p):
    *   rain       terrain0                    -> terrain1
    *   flow       terrain1, flux[p]           -> flux[q]
-   *   water      terrain1, flux[q], vel[p]   -> terrain0, vel[q]
+   *   water      terrain1, flux[q], vel[p], flow[p] -> terrain0, vel[q], flow[q]
    *   erosion    terrain0, vel[q], sed0      -> terrain1, sed1
    *   advect     vel[q], sed1 -> A, A -> B; maccormack -> sed0
    *   smooth     terrain1                    -> terrain2
@@ -423,7 +430,16 @@ export class ErosionSimulation {
       const velOut = this.velocity[q];
       this.flowBindGroups.push(this.bindGroup(this.flowPipeline, `flow-${p}`, [P, t1, this.flux[p], this.flux[q]]));
       this.waterBindGroups.push(
-        this.bindGroup(this.waterPipeline, `water-${p}`, [P, t1, this.flux[q], this.velocity[p], t0, velOut])
+        this.bindGroup(this.waterPipeline, `water-${p}`, [
+          P,
+          t1,
+          this.flux[q],
+          this.velocity[p],
+          t0,
+          velOut,
+          this.flowHistory[p],
+          this.flowHistory[q],
+        ])
       );
       this.erosionBindGroups.push(this.bindGroup(this.erosionPipeline, `erosion-${p}`, [P, t0, velOut, s0, t1, s1]));
       this.advectForwardBindGroups.push(
@@ -449,14 +465,17 @@ export class ErosionSimulation {
       this.terrain[1],
       this.simBase[1],
     ]);
-    this.exportBindGroup = this.bindGroup(this.exportPipeline, "export", [
-      T,
-      base,
-      this.terrain[0],
-      this.simBase[0],
-      this.sediment[0],
-      this.layerCompute.getOutputTexture(),
-    ]);
+    // The latest flow history is flowHistory[parity] (written by the last step).
+    this.exportBindGroups = [0, 1].map((p) =>
+      this.bindGroup(this.exportPipeline, `export-${p}`, [
+        T,
+        base,
+        this.terrain[0],
+        this.simBase[0],
+        this.flowHistory[p],
+        this.layerCompute.getOutputTexture(),
+      ])
+    );
   }
 
   private dispatch(
@@ -531,7 +550,7 @@ export class ErosionSimulation {
   private encodeExport(encoder: GPUCommandEncoder): void {
     const size = this.layerCompute.getTextureSize();
     const pass = encoder.beginComputePass({ label: "erosion-export" });
-    this.dispatch(pass, this.exportPipeline, this.exportBindGroup, Math.ceil(size / WORKGROUP));
+    this.dispatch(pass, this.exportPipeline, this.exportBindGroups[this.parity], Math.ceil(size / WORKGROUP));
     pass.end();
   }
 }

@@ -6,6 +6,16 @@ import { LayerCompute } from "../core/LayerCompute";
 import { LayerStack, serializeLayers, MAX_LAYERS, LAYER_FLOATS } from "../core/LayerSystem";
 import terrainShaderRaw from "../shaders/terrain.wgsl?raw";
 import layersShader from "../shaders/layers.wgsl?raw";
+
+// Display modes understood by terrain.wgsl (2+ index erosionMapValue kinds)
+const VISUALIZATION_MODES: Record<string, number> = {
+  terrain: 0,
+  heightmap: 1,
+  erosion: 2,
+  deposition: 3,
+  flow: 4,
+  water: 5,
+};
 import shadowMapShaderRaw from "../shaders/shadowmap.wgsl?raw";
 
 // Strip any "export default" wrapper if Vite added it
@@ -543,7 +553,9 @@ export class TerrainRenderer {
     lightDirection: vec3 = vec3.fromValues(0.5, 1.0, 0.3),
     shadowIntensity: number = 0.5,
     heightScale: number = 0.1,
-    showWater: boolean = true
+    showWater: boolean = true,
+    erosionMapRange: number = 0.3,
+    flowMapRange: number = 15.0
   ) {
     const uniformData = new Float32Array(80); // 320 bytes / 4 = 80 floats
 
@@ -560,7 +572,7 @@ export class TerrainRenderer {
     uniformData[48] = cameraPos[0];
     uniformData[49] = cameraPos[1];
     uniformData[50] = cameraPos[2];
-    uniformData[51] = visualizationMode === "heightmap" ? 1.0 : 0.0;
+    uniformData[51] = VISUALIZATION_MODES[visualizationMode] ?? 0;
 
     // Low color (3 floats + 1 padding at offset 52)
     uniformData[52] = lowColor[0];
@@ -595,6 +607,8 @@ export class TerrainRenderer {
     // Height scale + water display (offset 72)
     uniformData[72] = heightScale;
     uniformData[73] = showWater ? 1.0 : 0.0;
+    uniformData[74] = erosionMapRange;
+    uniformData[75] = flowMapRange;
 
     this.gpuContext.device.queue.writeBuffer(
       this.uniformBuffer,

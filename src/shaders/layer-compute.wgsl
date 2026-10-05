@@ -18,5 +18,6 @@ fn computeMain(@builtin(global_invocation_id) id: vec3u) {
     let uv = (vec2f(id.xy) + 0.5) / vec2f(texSize);
     let height = calculateHeight(uv);
 
-    textureStore(outputTexture, vec2i(id.xy), vec4f(height, 0.0, 0.0, 1.0));
+    // g/b/a are written by the erosion simulation (water, flow paths, erosion delta)
+    textureStore(outputTexture, vec2i(id.xy), vec4f(height, 0.0, 0.0, 0.0));
 }

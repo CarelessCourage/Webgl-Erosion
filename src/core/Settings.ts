@@ -1,7 +1,7 @@
 import { GUI } from "lil-gui";
 import { OrbitCamera } from "./Camera";
 import { LayerStack, AlphaLayer } from "./LayerSystem";
-import { ColorSystem, ColorGroup } from "./ColorSystem";
+import { ColorSystem, ColorGroup, EROSION_ALPHA_SOURCES } from "./ColorSystem";
 import { DOFSystem, DOFStop } from "./DOFSystem";
 import { ErosionSimulation, DEFAULT_EROSION_PARAMETERS } from "../simulation/ErosionSimulation";
 
@@ -26,11 +26,13 @@ export class Settings {
 
   // Visualization settings
   public visualization = {
-    mode: "terrain", // 'terrain' or 'heightmap'
+    mode: "terrain", // 'terrain', 'heightmap', or an erosion map ('erosion', 'deposition', 'flow', 'water')
     disableDisplacement: false,
     textureResolution: 2048, // Height texture resolution (512, 1024, 2048, 4096)
     meshResolution: 18, // Mesh detail level (4-25)
     heightScale: 0.1, // Layer height -> displayed height
+    erosionMapRange: 0.3, // World-space carve/deposit depth that reads as ~63% in erosion maps
+    flowMapRange: 15.0, // Water discharge that reads as ~63% in the flow paths map
   };
 
   // Camera settings
@@ -76,10 +78,9 @@ export class Settings {
   // Depth of Field settings
   public depthOfField = {
     enabled: true,
-    focalDepth: 0.0,        // Relative offset from camera (0 = camera distance)
-    focalRange: 1.0,        // Range that stays sharp (smaller = tighter focus)
-    blurStrength: 2.0,      // Far blur strength
-    nearBlurStrength: 2.0,  // Near blur strength
+    aperture: 2.0,          // Background blur in % of screen height (bigger = shallower focus)
+    autofocus: "center",    // 'center', 'mouse' or 'target' (orbit target)
+    focusSpeed: 6.0,        // How quickly focus eases to a new distance (0 = instant)
   };
 
   private gui: GUI;
@@ -127,11 +128,23 @@ export class Settings {
     // Visualization folder
     const vizFolder = this.gui.addFolder("Visualization");
     vizFolder
-      .add(this.visualization, "mode", ["terrain", "heightmap"])
+      .add(this.visualization, "mode", {
+        Terrain: "terrain",
+        "Height Map": "heightmap",
+        ...Object.fromEntries(
+          Object.values(EROSION_ALPHA_SOURCES).map((source) => [source.label, source.mode])
+        ),
+      })
       .name("Display Mode")
       .onChange(() => {
         this.updateColorFolderVisibility();
       });
+    vizFolder
+      .add(this.visualization, "erosionMapRange", 0.005, 1.0, 0.005)
+      .name("Erosion Map Range");
+    vizFolder
+      .add(this.visualization, "flowMapRange", 0.5, 50.0, 0.5)
+      .name("Flow Map Range");
     vizFolder.add(this.visualization, "disableDisplacement").name("Flat View");
     vizFolder
       .add(this.visualization, "heightScale", 0.01, 0.5, 0.01)
@@ -541,7 +554,7 @@ export class Settings {
 
   private updateColorFolderVisibility(): void {
     if (this.colorFolder) {
-      if (this.visualization.mode === "heightmap") {
+      if (this.visualization.mode !== "terrain") {
         this.colorFolder.close();
         this.colorFolder.domElement.style.display = "none";
       } else {
@@ -694,6 +707,13 @@ export class Settings {
         this.colorSystem.updateColorGroup(group.id, { blendMode: group.blendMode });
       });
 
+    folder
+      .add(group, "maskByAlpha")
+      .name("Alpha as Opacity")
+      .onChange(() => {
+        this.colorSystem.updateColorGroup(group.id, { maskByAlpha: group.maskByAlpha });
+      });
+
     // Source layer selection
     const layerOptions: { [key: string]: string | null } = {
       "Master (Combined)": null,
@@ -701,6 +721,9 @@ export class Settings {
     this.layerStack.getAllLayers().forEach((layer) => {
       layerOptions[layer.name] = layer.id;
     });
+    for (const [id, source] of Object.entries(EROSION_ALPHA_SOURCES)) {
+      layerOptions[source.label] = id;
+    }
 
     const sourceControls = {
       sourceLayer: group.sourceLayerId || "Master (Combined)",
@@ -793,15 +816,18 @@ export class Settings {
   }
 
   private setupDOFStopsGUI(): void {
-    this.dofStopsFolder = this.gui.addFolder("📷 DOF Stops");
+    this.dofStopsFolder = this.gui.addFolder("📷 Depth of Field");
     
-    // DOF enabled toggle
+    this.dofStopsFolder.add(this.depthOfField, "enabled").name("Enable DOF");
+    this.dofStopsFolder.add(this.depthOfField, "aperture", 0.0, 6.0, 0.1).name("Aperture");
     this.dofStopsFolder
-      .add(this.depthOfField, "enabled")
-      .name("Enable DOF")
-      .onChange(() => {
-        console.log('DOF enabled:', this.depthOfField.enabled);
-      });
+      .add(this.depthOfField, "autofocus", {
+        "Screen Center": "center",
+        "Mouse": "mouse",
+        "Orbit Target": "target",
+      })
+      .name("Autofocus");
+    this.dofStopsFolder.add(this.depthOfField, "focusSpeed", 0.0, 20.0, 0.5).name("Focus Speed");
     
     // Add button for new DOF stop
     const controls = {
@@ -822,9 +848,9 @@ export class Settings {
     this.dofSystem.addStop({
       cameraDistance: newDistance,
       focalOffset: 0.0,
-      focalRange: 2.0,
-      blurStrength: 2.0,
-      nearBlurStrength: 2.0,
+      focalRange: 0.5,
+      blurStrength: 1.0,
+      nearBlurStrength: 1.0,
     });
     
     this.refreshDOFStopsGUI();
@@ -868,29 +894,29 @@ export class Settings {
       });
 
     folder
-      .add(stop, "focalOffset", -10.0, 10.0, 0.1)
+      .add(stop, "focalOffset", -5.0, 5.0, 0.05)
       .name("Focal Offset")
       .onChange(() => {
         this.dofSystem.updateStop(stop.id, { focalOffset: stop.focalOffset });
       });
 
     folder
-      .add(stop, "focalRange", 0.1, 10.0, 0.1)
+      .add(stop, "focalRange", 0.0, 5.0, 0.05)
       .name("Focus Range")
       .onChange(() => {
         this.dofSystem.updateStop(stop.id, { focalRange: stop.focalRange });
       });
 
     folder
-      .add(stop, "blurStrength", 0.0, 5.0, 0.1)
-      .name("Far Blur")
+      .add(stop, "blurStrength", 0.0, 3.0, 0.05)
+      .name("Far Blur ×")
       .onChange(() => {
         this.dofSystem.updateStop(stop.id, { blurStrength: stop.blurStrength });
       });
 
     folder
-      .add(stop, "nearBlurStrength", 0.0, 5.0, 0.1)
-      .name("Near Blur")
+      .add(stop, "nearBlurStrength", 0.0, 3.0, 0.05)
+      .name("Near Blur ×")
       .onChange(() => {
         this.dofSystem.updateStop(stop.id, { nearBlurStrength: stop.nearBlurStrength });
       });

@@ -1,15 +1,17 @@
 /**
- * DOF System - Camera distance-based depth of field settings
- * Similar to color stops, but for DOF parameters based on camera distance
+ * DOF System - Camera distance-based depth of field tweaks
+ * Similar to color stops, but for DOF parameters based on camera distance.
+ * The blur itself is physically based (aperture + autofocus); stops adjust it
+ * artistically per zoom level. All distances are in world units.
  */
 
 export interface DOFStop {
   id: string;
   cameraDistance: number; // Camera distance threshold (e.g., 12.0, 18.0, 25.0)
-  focalOffset: number;    // Focal offset at this distance
-  focalRange: number;     // Focus range at this distance
-  blurStrength: number;   // Far blur strength at this distance
-  nearBlurStrength: number; // Near blur strength at this distance
+  focalOffset: number;    // World units added to the autofocus distance
+  focalRange: number;     // World units around the focus distance that stay sharp
+  blurStrength: number;   // Multiplier for blur behind the focus plane
+  nearBlurStrength: number; // Multiplier for blur in front of the focus plane
   enabled: boolean;
 }
 
@@ -19,21 +21,21 @@ export class DOFSystem {
   private changeCallback?: () => void;
 
   constructor() {
-    // Create default stops for close and far camera distances
+    // Close up: very shallow focus for a macro look. Further out: deeper focus.
     this.addStop({
       cameraDistance: 14.0,
-      focalOffset: -6.9,
-      focalRange: 1.0,
-      blurStrength: 3.0,
-      nearBlurStrength: 2.0,
+      focalOffset: 0.0,
+      focalRange: 0.3,
+      blurStrength: 1.0,
+      nearBlurStrength: 1.0,
     });
     
     this.addStop({
       cameraDistance: 20.0,
-      focalOffset: -9.9,
-      focalRange: 2.1,
-      blurStrength: 0.3,
-      nearBlurStrength: 0.0,
+      focalOffset: 0.0,
+      focalRange: 0.8,
+      blurStrength: 0.5,
+      nearBlurStrength: 0.3,
     });
   }
 
@@ -46,9 +48,9 @@ export class DOFSystem {
       id,
       cameraDistance: params.cameraDistance ?? 15.0,
       focalOffset: params.focalOffset ?? 0.0,
-      focalRange: params.focalRange ?? 2.0,
-      blurStrength: params.blurStrength ?? 2.0,
-      nearBlurStrength: params.nearBlurStrength ?? 2.0,
+      focalRange: params.focalRange ?? 0.5,
+      blurStrength: params.blurStrength ?? 1.0,
+      nearBlurStrength: params.nearBlurStrength ?? 1.0,
       enabled: params.enabled ?? true,
     };
 
@@ -121,12 +123,12 @@ export class DOFSystem {
     const enabledStops = this.stops.filter((s) => s.enabled);
     
     if (enabledStops.length === 0) {
-      // No stops - return defaults with no blur
+      // No stops - plain physically based blur
       return {
         focalOffset: 0.0,
-        focalRange: 100.0,   // Very large range = everything in focus
-        blurStrength: 0.0,   // No blur
-        nearBlurStrength: 0.0, // No blur
+        focalRange: 0.0,
+        blurStrength: 1.0,
+        nearBlurStrength: 1.0,
       };
     }
 
@@ -191,9 +193,9 @@ export class DOFSystem {
     // Fallback (shouldn't reach here)
     return {
       focalOffset: 0.0,
-      focalRange: 2.0,
-      blurStrength: 2.0,
-      nearBlurStrength: 2.0,
+      focalRange: 0.0,
+      blurStrength: 1.0,
+      nearBlurStrength: 1.0,
     };
   }
 

@@ -1,5 +1,6 @@
 // Step 2 (Mei et al. 3.2.2 / 3.2.3): update water depth from the net flux and
-// derive the velocity field.
+// derive the velocity field. Also records the peak water discharge per cell,
+// which persists as a "flow paths" map for visualization and coloring.
 
 @group(0) @binding(0) var<uniform> P: SimParams;
 @group(0) @binding(1) var terrain: texture_2d<f32>;
@@ -7,6 +8,8 @@
 @group(0) @binding(3) var velIn: texture_2d<f32>;
 @group(0) @binding(4) var terrainOut: texture_storage_2d<rg32float, write>;
 @group(0) @binding(5) var velOut: texture_storage_2d<rg32float, write>;
+@group(0) @binding(6) var flowIn: texture_2d<f32>;
+@group(0) @binding(7) var flowOut: texture_storage_2d<r32float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -61,6 +64,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         vel *= maxSpeed / speed;
     }
 
+    let discharge = length(vel) * d2;
+    let flow = max(textureLoad(flowIn, c, 0).x, discharge);
+
     textureStore(terrainOut, c, vec4f(t.x, d2, 0.0, 0.0));
     textureStore(velOut, c, vec4f(vel, 0.0, 0.0));
+    textureStore(flowOut, c, vec4f(flow, 0.0, 0.0, 0.0));
 }

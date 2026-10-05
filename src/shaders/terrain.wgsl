@@ -5,7 +5,7 @@ struct Uniforms {
     viewProjMatrix: mat4x4f,
     lightViewProjMatrix: mat4x4f,
     cameraPosition: vec3f,
-    visualizationMode: f32,        // 0.0 = terrain, 1.0 = heightmap
+    visualizationMode: f32,        // 0 = terrain, 1 = heightmap, 2+ = erosion map (see erosionMapValue)
     lowColor: vec3f,
     disableDisplacement: f32,      // 0.0 = enabled, 1.0 = disabled
     midColor: vec3f,
@@ -18,8 +18,8 @@ struct Uniforms {
     shadowIntensity: f32,          // 0.0 to 1.0
     heightScale: f32,              // texture height -> displayed height
     showWater: f32,                // 0.0 = off, 1.0 = tint cells that hold water
-    _padding0: f32,
-    _padding1: f32,
+    erosionMapRange: f32,          // world-space depth that reads as ~63% erosion/deposition
+    flowMapRange: f32,             // discharge that reads as ~63% in the flow paths map
 }
 
 
@@ -36,8 +36,8 @@ struct ColorGroup {
     strength: f32,          // 0.0 to 1.0
     blendMode: f32,         // 0=replace, 1=multiply, 2=add, 3=overlay
     stopCount: f32,         // Number of color stops
-    sourceLayerIndex: f32,  // -1 = master alpha, >= 0 = specific layer index
-    padding1: f32,
+    sourceLayerIndex: f32,  // -1 = master alpha, >= 0 = layer index, <= -2 = erosion map
+    maskByAlpha: f32,       // 1.0 = opacity ramps from the first to the last stop (see groupOpacity)
     padding2: f32,
     padding3: f32,
     stops: array<ColorStop, 16>,  // Max 16 stops per group
@@ -178,6 +178,21 @@ fn getLayerAlpha(layerIndex: i32, uv: vec2f) -> f32 {
     return layerValue * layer.strength;
 }
 
+// With "Alpha as Opacity" the group is transparent below its first stop and
+// fully applied at its last stop, so stops choose which part of the map gets painted.
+fn groupOpacity(group: ColorGroup, alphaValue: f32) -> f32 {
+    if (group.maskByAlpha < 0.5) {
+        return group.strength;
+    }
+    let first = group.stops[0].threshold;
+    let last = group.stops[max(i32(group.stopCount) - 1, 0)].threshold;
+    var ramp = step(first, alphaValue);
+    if (last > first) {
+        ramp = clamp((alphaValue - first) / (last - first), 0.0, 1.0);
+    }
+    return group.strength * ramp;
+}
+
 // Evaluate all color groups and blend them together
 fn evaluateAllColorGroups(masterAlpha: f32, uv: vec2f) -> vec3f {
     var finalColor = vec3f(0.0);
@@ -199,6 +214,9 @@ fn evaluateAllColorGroups(masterAlpha: f32, uv: vec2f) -> vec3f {
         if (sourceIndex >= 0) {
             // Use specific layer's alpha as mask
             alphaValue = getLayerAlpha(sourceIndex, uv);
+        } else if (sourceIndex <= -2) {
+            // Use an erosion simulation map (-2 eroded, -3 deposited, -4 flow, -5 water)
+            alphaValue = erosionMapValue(-sourceIndex - 2, uv);
         }
         
         // Evaluate this group's color
@@ -209,7 +227,7 @@ fn evaluateAllColorGroups(masterAlpha: f32, uv: vec2f) -> vec3f {
             finalColor = groupColor * group.strength;
             firstGroup = false;
         } else {
-            finalColor = blendColors(finalColor, groupColor, group.blendMode, group.strength);
+            finalColor = blendColors(finalColor, groupColor, group.blendMode, groupOpacity(group, alphaValue));
         }
     }
     
@@ -233,7 +251,8 @@ fn evaluateAllColorGroups(masterAlpha: f32, uv: vec2f) -> vec3f {
 
 
 // Bilinear sample of the height texture (rgba32float is not filterable).
-// r = terrain height, g = water depth (erosion cell units), b = sediment
+// r = terrain height, g = water depth (erosion cell units), b = flow paths,
+// a = erosion delta (see shaders/erosion/export.wgsl)
 fn sampleTerrain(uv: vec2f) -> vec4f {
     let size = vec2i(textureDimensions(heightTexture));
     let p = clamp(uv, vec2f(0.0), vec2f(1.0)) * vec2f(size) - 0.5;
@@ -250,6 +269,23 @@ fn sampleTerrain(uv: vec2f) -> vec4f {
 
 fn terrainHeight(uv: vec2f) -> f32 {
     return sampleTerrain(uv).r * uniforms.heightScale;
+}
+
+// Erosion simulation maps as 0-1 alpha values:
+// 0 = eroded (carved away), 1 = deposited, 2 = flow paths, 3 = water
+fn erosionMapValue(kind: i32, uv: vec2f) -> f32 {
+    let t = sampleTerrain(uv);
+    // Erosion delta in world units, so the map follows the displayed relief
+    let worldDelta = t.a * uniforms.heightScale * 5.0;
+    let erosionRange = max(uniforms.erosionMapRange, 1e-5);
+    let flowRange = max(uniforms.flowMapRange, 1e-5);
+    switch (kind) {
+        case 0: { return 1.0 - exp(-max(-worldDelta, 0.0) / erosionRange); }
+        case 1: { return 1.0 - exp(-max(worldDelta, 0.0) / erosionRange); }
+        case 2: { return 1.0 - exp(-t.b / flowRange); }
+        case 3: { return smoothstep(0.05, 1.5, t.g); }
+        default: { return 0.0; }
+    }
 }
 
 @vertex
@@ -286,10 +322,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     // Get height value from vertex shader
     let height = input.height;
     
-    // Heightmap visualization mode (grayscale)
-    if (uniforms.visualizationMode > 0.5) {
-        let gray = vec3f(height);
-        return vec4f(gray, 1.0);
+    // Map visualization modes (grayscale): height map or an erosion map
+    let mode = i32(uniforms.visualizationMode + 0.5);
+    if (mode == 1) {
+        return vec4f(vec3f(height), 1.0);
+    }
+    if (mode >= 2) {
+        // Sides/bottom would only show stretched edge texels, so keep them neutral
+        if (input.normal.y < 0.5) {
+            return vec4f(vec3f(0.12), 1.0);
+        }
+        return vec4f(vec3f(erosionMapValue(mode - 2, input.uv)), 1.0);
     }
     
     // Normals from neighbouring texels of the height texture
@@ -352,9 +395,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 
     // Water from the erosion simulation
     if (isTopSurface && uniforms.showWater > 0.5) {
-        let water = sampleTerrain(input.uv).g;
         // Fade in from a thin film to fully covered so rain sheets stay subtle
-        let coverage = smoothstep(0.05, 1.5, water);
+        let coverage = erosionMapValue(3, input.uv);
         let waterColor = vec3f(0.12, 0.32, 0.55) * max(lightDir.y, 0.5);
         finalColor = mix(finalColor, waterColor, coverage * 0.9);
     }

@@ -88,6 +88,16 @@ async function init() {
       e.preventDefault();
     });
 
+    // Mouse position in canvas pixels, used by the "Mouse" autofocus mode
+    let mouseFocusPoint: [number, number] = [canvas.width / 2, canvas.height / 2];
+    canvas.addEventListener("mousemove", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mouseFocusPoint = [
+        (e.clientX - rect.left) * (canvas.width / rect.width),
+        (e.clientY - rect.top) * (canvas.height / rect.height),
+      ];
+    });
+
     // Rain brush: hold C and drag on the terrain
     let rainToolActive = false;
     let painting = false;
@@ -461,7 +471,9 @@ async function init() {
         lightDirection,
         settings.lighting.shadowIntensity,
         settings.visualization.heightScale,
-        settings.erosion.showWater
+        settings.erosion.showWater,
+        settings.visualization.erosionMapRange,
+        settings.visualization.flowMapRange
       );
 
       // Begin rendering
@@ -522,20 +534,29 @@ async function init() {
         // Get interpolated DOF settings based on current camera distance
         const interpolated = settings.dofSystem.interpolateSettings(camera.getDistance());
         
+        const dof = settings.depthOfField;
         dofPass.apply(
           commandEncoder,
           offscreenTexture,
           depthTexture,
           dofOutputTexture,
           {
-            ...settings.depthOfField,
-            focalDepth: interpolated.focalOffset,
+            aperture: dof.aperture,
+            focalOffset: interpolated.focalOffset,
             focalRange: interpolated.focalRange,
-            blurStrength: interpolated.blurStrength,
-            nearBlurStrength: interpolated.nearBlurStrength,
+            farStrength: interpolated.blurStrength,
+            nearStrength: interpolated.nearBlurStrength,
             cameraNear: camera.near,
             cameraFar: camera.far,
-            cameraDistance: camera.getDistance(),
+            targetDistance: camera.getDistance(),
+            focusPoint:
+              dof.autofocus === "mouse"
+                ? mouseFocusPoint
+                : dof.autofocus === "center"
+                ? [canvas.width / 2, canvas.height / 2]
+                : null,
+            focusSpeed: dof.focusSpeed,
+            deltaTime,
           }
         );
 

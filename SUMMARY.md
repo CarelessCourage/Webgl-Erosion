@@ -55,6 +55,14 @@ ported from the original WebGL shaders in `src-old/`. See `MIGRATION_PLAN.md` �
 or hold **C** and drag on the terrain to paint rain (this auto-starts the simulation).
 "Reset Erosion" returns to the layer terrain. Editing layers keeps the erosion carved so far.
 
+**Erosion maps:** Visualization → Display Mode can show Erosion (carved), Deposition, Flow Paths or Water
+in grayscale, like the height map ("Erosion Map Range" / "Flow Map Range" control the contrast).
+The same maps are available as a color group's **Alpha Source**; enable **Alpha as Opacity** to paint
+a color only along rain paths, carved channels or deposits. With Alpha as Opacity the group is transparent
+below its first color stop and fully applied at its last stop, so the stop thresholds pick which part of the
+map gets painted. Default groups (empty until it rains): "Erosion" (exposed subsoil/bedrock on carved slopes),
+"Deposition" (silt/sand on valley floors and fans) and "Flow Paths" (soil/gravel along channels).
+
 ## 🚀 Next Steps
 
 ### To Test the Setup:

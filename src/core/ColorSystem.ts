@@ -15,10 +15,25 @@ export interface ColorGroup {
   name: string;
   enabled: boolean;
   strength: number; // 0.0 to 1.0 - opacity/influence of this group
-  sourceLayerId: string | null; // Which alpha layer to use as mask (null = master/combined)
+  sourceLayerId: string | null; // Layer id or ErosionAlphaSourceId to use as mask (null = master/combined)
   blendMode: "replace" | "multiply" | "add" | "overlay"; // How to blend with other groups
+  maskByAlpha: boolean; // Opacity ramps from the first to the last stop's threshold (paint only part of the map)
   colorStops: ColorStop[];
 }
+
+/**
+ * Alpha maps produced by the erosion simulation. They can be used as a color
+ * group's alpha source (in place of a layer id) and as display modes.
+ * `index` is the GPU source index (-2 and below; -1 = master, >= 0 = layer).
+ */
+export const EROSION_ALPHA_SOURCES = {
+  "erosion:eroded": { label: "🌊 Erosion (carved)", mode: "erosion", index: -2 },
+  "erosion:deposited": { label: "🌊 Deposition", mode: "deposition", index: -3 },
+  "erosion:flow": { label: "🌊 Flow Paths", mode: "flow", index: -4 },
+  "erosion:water": { label: "🌊 Water", mode: "water", index: -5 },
+} as const;
+
+export type ErosionAlphaSourceId = keyof typeof EROSION_ALPHA_SOURCES;
 
 export class ColorSystem {
   private colorGroups: Map<string, ColorGroup> = new Map();
@@ -26,14 +41,58 @@ export class ColorSystem {
   private changeCallbacks: Array<() => void> = [];
 
   constructor() {
-    // Create default base group with traditional 3-color setup
+    // Natural height gradient. Thresholds are tuned to the default terrain,
+    // whose displayed heights range roughly 0.1 - 0.75.
     this.addColorGroup({
       name: "Base Terrain",
       sourceLayerId: null, // Uses master alpha map
       colorStops: [
-        { id: "stop_0", threshold: 0.0, color: "#429a42", enabled: true }, // Low (green valley)
-        { id: "stop_1", threshold: 0.5, color: "#565048", enabled: true }, // Mid (brown slope)
-        { id: "stop_2", threshold: 0.85, color: "#fafafa", enabled: true }, // High (white peak)
+        { id: "stop_0", threshold: 0.1, color: "#6b8a45", enabled: true }, // Meadow
+        { id: "stop_1", threshold: 0.3, color: "#4f6b35", enabled: true }, // Forest
+        { id: "stop_2", threshold: 0.45, color: "#6a6448", enabled: true }, // Scrub / dry grass
+        { id: "stop_3", threshold: 0.55, color: "#7d7468", enabled: true }, // Rock
+        { id: "stop_4", threshold: 0.66, color: "#a29d96", enabled: true }, // Light rock
+        { id: "stop_5", threshold: 0.71, color: "#f2f2ee", enabled: true }, // Snow
+      ],
+    });
+
+    // The erosion groups below are empty until the simulation runs.
+    // Deeply carved slopes expose subsoil and bedrock
+    this.addColorGroup({
+      name: "Erosion",
+      sourceLayerId: "erosion:eroded",
+      blendMode: "replace",
+      maskByAlpha: true,
+      strength: 0.7,
+      colorStops: [
+        { id: "stop_0", threshold: 0.35, color: "#7b6e62", enabled: true }, // Exposed subsoil
+        { id: "stop_1", threshold: 0.8, color: "#5b524b", enabled: true }, // Bare bedrock
+      ],
+    });
+
+    // Sediment settles as silt and sand on valley floors and fans
+    this.addColorGroup({
+      name: "Deposition",
+      sourceLayerId: "erosion:deposited",
+      blendMode: "replace",
+      maskByAlpha: true,
+      strength: 0.8,
+      colorStops: [
+        { id: "stop_0", threshold: 0.08, color: "#a08d6c", enabled: true }, // Thin silt
+        { id: "stop_1", threshold: 0.45, color: "#b8a582", enabled: true }, // Thick sand deposits
+      ],
+    });
+
+    // Exposed soil and gravel where water has flowed
+    this.addColorGroup({
+      name: "Flow Paths",
+      sourceLayerId: "erosion:flow",
+      blendMode: "replace",
+      maskByAlpha: true,
+      strength: 0.85,
+      colorStops: [
+        { id: "stop_0", threshold: 0.4, color: "#8a7658", enabled: true }, // Smaller rills: dry soil
+        { id: "stop_1", threshold: 0.85, color: "#5e4e3c", enabled: true }, // Main channels: wet gravel
       ],
     });
   }
@@ -52,6 +111,7 @@ export class ColorSystem {
       strength: params.strength ?? 1.0,
       sourceLayerId: params.sourceLayerId ?? null,
       blendMode: params.blendMode ?? "replace",
+      maskByAlpha: params.maskByAlpha ?? false,
       colorStops: params.colorStops?.map((stop, i) => ({
         id: `${id}_stop_${i}`,
         threshold: stop.threshold,
@@ -209,7 +269,7 @@ export class ColorSystem {
   /**
    * Serialize color groups for GPU (flat array format)
    * Format per group: enabled(f32), strength(f32), blendMode(f32), stopCount(f32),
-   *                   sourceLayerIndex(f32), padding(f32 x 3)
+   *                   sourceLayerIndex(f32), maskByAlpha(f32), padding(f32 x 2)
    * Then per stop: threshold(f32), r(f32), g(f32), b(f32)
    */
   public serializeForGPU(layerIdToIndex: Map<string, number>): Float32Array {
@@ -237,14 +297,19 @@ export class ColorSystem {
         data[offset++] = this.blendModeToFloat(group.blendMode);
         data[offset++] = stopCount;
         
-        // Source layer index (-1 = master/combined alpha)
-        const sourceIndex = group.sourceLayerId 
-          ? (layerIdToIndex.get(group.sourceLayerId) ?? -1)
+        // Source index: -1 = master/combined alpha, >= 0 = layer, <= -2 = erosion map
+        const erosionSource = group.sourceLayerId
+          ? EROSION_ALPHA_SOURCES[group.sourceLayerId as ErosionAlphaSourceId]
+          : undefined;
+        const sourceIndex = erosionSource
+          ? erosionSource.index
+          : group.sourceLayerId
+          ? layerIdToIndex.get(group.sourceLayerId) ?? -1
           : -1;
         data[offset++] = sourceIndex;
         
+        data[offset++] = group.maskByAlpha ? 1.0 : 0.0;
         // Padding (align to 8 floats)
-        data[offset++] = 0.0;
         data[offset++] = 0.0;
         data[offset++] = 0.0;
 
