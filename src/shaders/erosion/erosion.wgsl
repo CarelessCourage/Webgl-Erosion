@@ -28,7 +28,13 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let sinTilt = sqrt(g2 / (1.0 + g2));
 
     let speed = length(textureLoad(velocity, c, 0).xy);
-    let capacity = P.kc * max(sinTilt, P.minSlope) * speed;
+    var capacity = P.kc * max(sinTilt, P.minSlope) * speed;
+
+    // Deep (pooled) water barely erodes its bed, so lakes and slow rivers fill
+    // with sediment instead of digging down; thin fast flow on slopes still cuts.
+    if (P.maxErosionDepth > 0.0) {
+        capacity *= clamp(1.0 - t.y / P.maxErosionDepth, 0.0, 1.0);
+    }
 
     var height = t.x;
     var sediment = textureLoad(sedimentIn, c, 0).x;

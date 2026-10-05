@@ -30,9 +30,13 @@ struct SimParams {
     brushActive: f32,
     time: f32,
     smoothThreshold: f32, // spike smoothing threshold in cell units (0 = off)
+    maxErosionDepth: f32, // water deeper than this no longer erodes (cell units, 0 = no limit)
+    rainOnPeaks: f32,     // 0 = uniform rain, 1 = rain scales with altitude
+    rainHeightMin: f32,   // terrain height range used for altitude rain (cell units)
+    rainHeightMax: f32,
+    _pad0: f32,
     _pad1: f32,
     _pad2: f32,
-    _pad3: f32,
 }
 
 const MIN_FLOW_DEPTH: f32 = 0.01;

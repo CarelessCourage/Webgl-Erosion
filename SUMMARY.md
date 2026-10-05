@@ -54,6 +54,8 @@ ported from the original WebGL shaders in `src-old/`. See `MIGRATION_PLAN.md` �
 **How to use:** open "🌊 Erosion Simulation", enable "Rain Everywhere" and tick "Running",
 or hold **C** and drag on the terrain to paint rain (this auto-starts the simulation).
 "Reset Erosion" returns to the layer terrain. Editing layers keeps the erosion carved so far.
+Sediment transport conserves mass, so material carved from the slopes fills the valleys into flat floors;
+"Rain on Peaks" concentrates global rain on high ground and "Max Erosion Depth" stops pooled water digging down.
 
 **Erosion maps:** Visualization → Display Mode can show Erosion (carved), Deposition, Flow Paths or Water
 in grayscale, like the height map ("Erosion Map Range" / "Flow Map Range" control the contrast).

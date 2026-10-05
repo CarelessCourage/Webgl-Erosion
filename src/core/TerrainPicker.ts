@@ -23,6 +23,7 @@ export class TerrainPicker {
   private storageBuffer: GPUBuffer;
   private readBuffer: GPUBuffer;
   private heights: Float32Array | null = null;
+  private minHeight = 0;
   private maxHeight = 0;
   private pending = false;
 
@@ -79,9 +80,14 @@ export class TerrainPicker {
       .then(() => {
         const heights = new Float32Array(this.readBuffer.getMappedRange().slice(0));
         this.readBuffer.unmap();
+        let min = Infinity;
         let max = 0;
-        for (const h of heights) max = Math.max(max, h);
+        for (const h of heights) {
+          min = Math.min(min, h);
+          max = Math.max(max, h);
+        }
         this.heights = heights;
+        this.minHeight = min;
         this.maxHeight = max;
       })
       .catch((error) => console.warn("Terrain picker read-back failed:", error))
@@ -168,6 +174,11 @@ export class TerrainPicker {
       u: Math.min(1, Math.max(0, (x + half) / TERRAIN_WORLD_SIZE)),
       v: Math.min(1, Math.max(0, (z + half) / TERRAIN_WORLD_SIZE)),
     };
+  }
+
+  /** Displayed terrain height range (texture units), once a read-back has completed. */
+  public getHeightRange(): { min: number; max: number } | null {
+    return this.heights ? { min: this.minHeight, max: this.maxHeight } : null;
   }
 
   public destroy(): void {

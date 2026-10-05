@@ -376,6 +376,7 @@ async function init() {
       camera.update(deltaTime);
 
       // Step erosion simulation if running
+      erosionSimulation.setRainHeightRange(terrainPicker.getHeightRange());
       erosionSimulation.step();
       if (erosionSimulation.isRunning() && frameCount % 30 === 0) {
         terrainPicker.refresh();

@@ -582,6 +582,7 @@ export class Settings {
     const rainFolder = erosionFolder.addFolder("Rain");
     rainFolder.add(this.erosion, "globalRain").name("🌧 Rain Everywhere").onChange(apply);
     rainFolder.add(this.erosion, "rainRate", 0.0, 1.0, 0.01).name("Rain Rate").onChange(apply);
+    rainFolder.add(this.erosion, "rainOnPeaks", 0.0, 1.0, 0.05).name("Rain on Peaks").onChange(apply);
     rainFolder.add(this.erosion, "brushRadius", 0.005, 0.2, 0.005).name("Brush Radius").onChange(apply);
     rainFolder.add(this.erosion, "brushStrength", 0.5, 20, 0.5).name("Brush Strength").onChange(apply);
     rainFolder.add(this.erosion, "drainEdges").name("Drain at Edges").onChange(apply);
@@ -596,6 +597,7 @@ export class Settings {
     hydraulicFolder.add(this.erosion, "dissolution", 0.001, 0.2, 0.001).name("Erosion Rate (Ks)").onChange(apply);
     hydraulicFolder.add(this.erosion, "deposition", 0.001, 0.1, 0.001).name("Deposition Rate (Kd)").onChange(apply);
     hydraulicFolder.add(this.erosion, "evaporation", 0.0, 0.5, 0.005).name("Evaporation (Ke)").onChange(apply);
+    hydraulicFolder.add(this.erosion, "maxErosionDepth", 0.0, 10.0, 0.1).name("Max Erosion Depth").onChange(apply);
     hydraulicFolder.add(this.erosion, "minSlope", 0.0, 0.5, 0.01).name("Min Slope").onChange(apply);
     hydraulicFolder.add(this.erosion, "velocityAdvection", 0.0, 0.5, 0.01).name("Flow Momentum").onChange(apply);
     hydraulicFolder.add(this.erosion, "timeStep", 0.01, 0.1, 0.005).name("Time Step").onChange(apply);

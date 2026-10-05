@@ -200,12 +200,14 @@ Heights and water are stored in "cell units" so simulated slopes match rendered 
 **Simulation state textures:** terrain (height + water, rg32float), flux (rgba32float), velocity (rg32float), sediment (r32float), base height (r32float), plus scratch textures for advection and thermal flux.
 
 ### 7.2 Simulation Passes (per step)
-1. `rain.wgsl` - global rain + rain brush (paper 3.1)
+1. `rain.wgsl` - global rain (optionally weighted by altitude, "Rain on Peaks") + rain brush (paper 3.1)
 2. `flow.wgsl` - outflow flux through virtual pipes (3.2.1)
 3. `water.wgsl` - water depth + velocity field (3.2.2/3.2.3)
-4. `erosion.wgsl` - erosion/deposition, capacity `Kc·sin(tilt)·|v|` (3.3)
-5. `advect.wgsl` ×2 + `maccormack.wgsl` - sediment transport (3.4)
-6. `smooth.wgsl` - removes single-cell spikes (from the original `average-frag.glsl`)
+4. `erosion.wgsl` - erosion/deposition, capacity `Kc·sin(tilt)·|v|` (3.3), scaled down in deep water ("Max Erosion Depth") so pools fill instead of digging
+5. `sediment-flux.wgsl` + `sediment-apply.wgsl` - mass-conserving sediment transport that moves sediment with the water flux.
+   Replaces the paper's semi-Lagrangian/MacCormack advection (3.4), which lost ~75-99% of the carved material in transit,
+   so valleys dug down instead of filling up.
+6. `smooth.wgsl` - optional single-cell spike removal (from the original `average-frag.glsl`); off by default because it is not mass conserving
 7. `thermal-flux.wgsl` + `thermal-apply.wgsl` - talus-angle thermal erosion + evaporation (3.5)
 
 ### 7.3 Integration with Layer System ✅

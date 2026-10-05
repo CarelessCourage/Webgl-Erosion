@@ -5,8 +5,8 @@ import rainShader from "../shaders/erosion/rain.wgsl?raw";
 import flowShader from "../shaders/erosion/flow.wgsl?raw";
 import waterShader from "../shaders/erosion/water.wgsl?raw";
 import erosionShader from "../shaders/erosion/erosion.wgsl?raw";
-import advectShader from "../shaders/erosion/advect.wgsl?raw";
-import macCormackShader from "../shaders/erosion/maccormack.wgsl?raw";
+import sedimentFluxShader from "../shaders/erosion/sediment-flux.wgsl?raw";
+import sedimentApplyShader from "../shaders/erosion/sediment-apply.wgsl?raw";
 import smoothShader from "../shaders/erosion/smooth.wgsl?raw";
 import thermalFluxShader from "../shaders/erosion/thermal-flux.wgsl?raw";
 import thermalApplyShader from "../shaders/erosion/thermal-apply.wgsl?raw";
@@ -32,6 +32,8 @@ export interface ErosionParameters {
   thermalRate: number;
   talusAngle: number; // degrees
   smoothThreshold: number; // spike smoothing, in cell units (0 = off)
+  maxErosionDepth: number; // water deeper than this stops eroding, in cell units (0 = no limit)
+  rainOnPeaks: number; // 0 = uniform global rain, 1 = rain scales with altitude
   globalRain: boolean;
   rainRate: number;
   drainEdges: boolean;
@@ -39,41 +41,46 @@ export interface ErosionParameters {
   brushStrength: number;
 }
 
-// Physics constants follow the original WebGL implementation (src-old/main.ts);
-// the sediment/water rates are tuned stronger so material visibly travels into
-// the valleys (more water + higher capacity/pickup moves more sediment, while a
-// moderate Kd keeps it in suspension long enough to form fans and deltas).
+// Rates follow the original WebGL implementation (src-old/main.ts). With
+// mass-conserving sediment transport, everything carved off the slopes ends up
+// as valley fill, so these moderate rates already build visible flats and fans.
 export const DEFAULT_EROSION_PARAMETERS: ErosionParameters = {
   stepsPerFrame: 3,
   timeStep: 0.05,
   pipeLength: 0.8,
   pipeArea: 0.6,
   gravity: 0.8,
-  sedimentCapacity: 0.25,
-  dissolution: 0.08,
-  deposition: 0.015,
+  sedimentCapacity: 0.06,
+  dissolution: 0.036,
+  deposition: 0.006,
   evaporation: 0.03,
   minSlope: 0.1,
   velocityAdvection: 0.2,
   thermalRate: 0.5,
   talusAngle: 60,
-  smoothThreshold: 0.1,
+  smoothThreshold: 0, // off: it is not mass conserving and fills deposits with extra material
+  maxErosionDepth: 2.0,
+  rainOnPeaks: 0.7,
   globalRain: false,
-  rainRate: 0.03,
+  rainRate: 0.015,
   drainEdges: true,
   brushRadius: 0.04,
   brushStrength: 4.0,
 };
 
 const WORKGROUP = 8;
+const SIM_PARAM_FLOATS = 28; // Must match struct SimParams in shaders/erosion/common.wgsl
 
 /**
  * GPU hydraulic + thermal erosion following Mei et al. 2007
  * ("Fast Hydraulic Erosion Simulation and Visualization on GPU").
  *
  * Per step: rain -> outflow flux -> water depth & velocity -> erosion/deposition
- * -> MacCormack sediment advection -> spike smoothing -> thermal erosion
- * -> evaporation.
+ * -> sediment transport -> spike smoothing -> thermal erosion -> evaporation.
+ *
+ * Sediment is transported with the water flux (mass conserving) instead of the
+ * paper's semi-Lagrangian advection, which loses most sediment in narrow
+ * channels and keeps rivers "hungry" so they dig down instead of depositing.
  *
  * The simulation runs on its own grid and writes "layer base + erosion delta"
  * into the LayerCompute display texture, so it works with any texture resolution
@@ -90,6 +97,7 @@ export class ErosionSimulation {
   private parity = 0;
   private time = 0;
   private brush: { u: number; v: number } | null = null;
+  private rainHeightRange: { min: number; max: number } | null = null;
 
   // Simulation state (index 0 holds the state between steps, index 1 is scratch)
   private terrain!: GPUTexture[]; // rg32float: height, water (index 2 is extra scratch)
@@ -98,9 +106,7 @@ export class ErosionSimulation {
   private sediment!: GPUTexture[]; // r32float
   private simBase!: GPUTexture[]; // r32float: base height the delta is relative to
   private flowHistory!: GPUTexture[]; // r32float: peak discharge per cell (flow paths map)
-  private advectA!: GPUTexture;
-  private advectB!: GPUTexture;
-  private thermalFlux!: GPUTexture;
+  private thermalFlux!: GPUTexture; // rgba32float scratch: sediment flux, then thermal flux
 
   private simParamsBuffer: GPUBuffer;
   private transferParamsBuffer: GPUBuffer;
@@ -109,9 +115,8 @@ export class ErosionSimulation {
   private flowPipeline: GPUComputePipeline;
   private waterPipeline: GPUComputePipeline;
   private erosionPipeline: GPUComputePipeline;
-  private advectForwardPipeline: GPUComputePipeline;
-  private advectBackwardPipeline: GPUComputePipeline;
-  private macCormackPipeline: GPUComputePipeline;
+  private sedimentFluxPipeline: GPUComputePipeline;
+  private sedimentApplyPipeline: GPUComputePipeline;
   private smoothPipeline: GPUComputePipeline;
   private thermalFluxPipeline: GPUComputePipeline;
   private thermalApplyPipeline: GPUComputePipeline;
@@ -125,9 +130,8 @@ export class ErosionSimulation {
   private flowBindGroups!: GPUBindGroup[];
   private waterBindGroups!: GPUBindGroup[];
   private erosionBindGroups!: GPUBindGroup[];
-  private advectForwardBindGroups!: GPUBindGroup[];
-  private advectBackwardBindGroups!: GPUBindGroup[];
-  private macCormackBindGroups!: GPUBindGroup[];
+  private sedimentFluxBindGroups!: GPUBindGroup[];
+  private sedimentApplyBindGroup!: GPUBindGroup;
   private rebaseBindGroup!: GPUBindGroup;
   private exportBindGroups!: GPUBindGroup[];
 
@@ -145,7 +149,7 @@ export class ErosionSimulation {
 
     this.simParamsBuffer = this.device.createBuffer({
       label: "erosion-sim-params",
-      size: 24 * 4,
+      size: SIM_PARAM_FLOATS * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.transferParamsBuffer = this.device.createBuffer({
@@ -158,9 +162,8 @@ export class ErosionSimulation {
     this.flowPipeline = this.createPipeline("flow", flowShader);
     this.waterPipeline = this.createPipeline("water", waterShader);
     this.erosionPipeline = this.createPipeline("erosion", erosionShader);
-    this.advectForwardPipeline = this.createPipeline("advect-forward", advectShader, { ADVECT_SIGN: 1 });
-    this.advectBackwardPipeline = this.createPipeline("advect-backward", advectShader, { ADVECT_SIGN: -1 });
-    this.macCormackPipeline = this.createPipeline("maccormack", macCormackShader);
+    this.sedimentFluxPipeline = this.createPipeline("sediment-flux", sedimentFluxShader);
+    this.sedimentApplyPipeline = this.createPipeline("sediment-apply", sedimentApplyShader);
     this.smoothPipeline = this.createPipeline("smooth", smoothShader);
     this.thermalFluxPipeline = this.createPipeline("thermal-flux", thermalFluxShader);
     this.thermalApplyPipeline = this.createPipeline("thermal-apply", thermalApplyShader);
@@ -209,6 +212,14 @@ export class ErosionSimulation {
     this.brush = uv;
   }
 
+  /**
+   * Terrain height range (texture height units) used to weight rain by altitude,
+   * e.g. from the TerrainPicker read-back. Null disables the weighting.
+   */
+  public setRainHeightRange(range: { min: number; max: number } | null): void {
+    this.rainHeightRange = range;
+  }
+
   /** Advance the simulation (if running) and update the displayed terrain. */
   public step(): void {
     if (!this.running) return;
@@ -227,9 +238,8 @@ export class ErosionSimulation {
       this.dispatch(pass, this.flowPipeline, this.flowBindGroups[p], groups);
       this.dispatch(pass, this.waterPipeline, this.waterBindGroups[p], groups);
       this.dispatch(pass, this.erosionPipeline, this.erosionBindGroups[p], groups);
-      this.dispatch(pass, this.advectForwardPipeline, this.advectForwardBindGroups[p], groups);
-      this.dispatch(pass, this.advectBackwardPipeline, this.advectBackwardBindGroups[p], groups);
-      this.dispatch(pass, this.macCormackPipeline, this.macCormackBindGroups[p], groups);
+      this.dispatch(pass, this.sedimentFluxPipeline, this.sedimentFluxBindGroups[p], groups);
+      this.dispatch(pass, this.sedimentApplyPipeline, this.sedimentApplyBindGroup, groups);
       this.dispatch(pass, this.smoothPipeline, this.smoothBindGroup, groups);
       this.dispatch(pass, this.thermalFluxPipeline, this.thermalFluxBindGroup, groups);
       this.dispatch(pass, this.thermalApplyPipeline, this.thermalApplyBindGroup, groups);
@@ -258,8 +268,6 @@ export class ErosionSimulation {
       ...this.velocity,
       ...this.sediment,
       ...this.flowHistory,
-      this.advectA,
-      this.advectB,
       this.thermalFlux,
     ]) {
       encoder
@@ -359,8 +367,6 @@ export class ErosionSimulation {
     this.sediment = pair("sediment", "r32float");
     this.simBase = pair("base", "r32float");
     this.flowHistory = pair("flow-history", "r32float");
-    this.advectA = this.createTexture("advect-a", "r32float");
-    this.advectB = this.createTexture("advect-b", "r32float");
     this.thermalFlux = this.createTexture("thermal-flux", "rgba32float");
   }
 
@@ -372,8 +378,6 @@ export class ErosionSimulation {
       ...this.sediment,
       ...this.simBase,
       ...this.flowHistory,
-      this.advectA,
-      this.advectB,
       this.thermalFlux,
     ]) {
       texture.destroy();
@@ -404,7 +408,7 @@ export class ErosionSimulation {
    *   flow       terrain1, flux[p]           -> flux[q]
    *   water      terrain1, flux[q], vel[p], flow[p] -> terrain0, vel[q], flow[q]
    *   erosion    terrain0, vel[q], sed0      -> terrain1, sed1
-   *   advect     vel[q], sed1 -> A, A -> B; maccormack -> sed0
+   *   sediment   terrain1, flux[q], sed1 -> thermalFlux (as sediment flux); sed1 + it -> sed0
    *   smooth     terrain1                    -> terrain2
    *   thermal    terrain2 -> thermalFlux; terrain2 + thermalFlux -> terrain0
    */
@@ -415,15 +419,14 @@ export class ErosionSimulation {
 
     this.rainBindGroup = this.bindGroup(this.rainPipeline, "rain", [P, t0, t1]);
     this.smoothBindGroup = this.bindGroup(this.smoothPipeline, "smooth", [P, t1, t2]);
+    this.sedimentApplyBindGroup = this.bindGroup(this.sedimentApplyPipeline, "sediment-apply", [s1, this.thermalFlux, s0]);
     this.thermalFluxBindGroup = this.bindGroup(this.thermalFluxPipeline, "thermal-flux", [P, t2, this.thermalFlux]);
     this.thermalApplyBindGroup = this.bindGroup(this.thermalApplyPipeline, "thermal-apply", [P, t2, this.thermalFlux, t0]);
 
     this.flowBindGroups = [];
     this.waterBindGroups = [];
     this.erosionBindGroups = [];
-    this.advectForwardBindGroups = [];
-    this.advectBackwardBindGroups = [];
-    this.macCormackBindGroups = [];
+    this.sedimentFluxBindGroups = [];
 
     for (const p of [0, 1]) {
       const q = 1 - p;
@@ -442,14 +445,8 @@ export class ErosionSimulation {
         ])
       );
       this.erosionBindGroups.push(this.bindGroup(this.erosionPipeline, `erosion-${p}`, [P, t0, velOut, s0, t1, s1]));
-      this.advectForwardBindGroups.push(
-        this.bindGroup(this.advectForwardPipeline, `advect-forward-${p}`, [P, velOut, s1, this.advectA])
-      );
-      this.advectBackwardBindGroups.push(
-        this.bindGroup(this.advectBackwardPipeline, `advect-backward-${p}`, [P, velOut, this.advectA, this.advectB])
-      );
-      this.macCormackBindGroups.push(
-        this.bindGroup(this.macCormackPipeline, `maccormack-${p}`, [P, velOut, s1, this.advectA, this.advectB, s0])
+      this.sedimentFluxBindGroups.push(
+        this.bindGroup(this.sedimentFluxPipeline, `sediment-flux-${p}`, [P, t1, this.flux[q], s1, this.thermalFlux])
       );
     }
   }
@@ -518,6 +515,10 @@ export class ErosionSimulation {
         this.brush ? 1 : 0,
         this.time,
         p.smoothThreshold,
+        p.maxErosionDepth,
+        this.rainHeightRange ? p.rainOnPeaks : 0,
+        (this.rainHeightRange?.min ?? 0) * this.heightUnits(),
+        (this.rainHeightRange?.max ?? 0) * this.heightUnits(),
         0,
         0,
         0,
