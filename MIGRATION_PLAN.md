@@ -185,73 +185,48 @@ Instead of single noise generation, we implemented a sophisticated **layer-based
 
 ---
 
-## NEXT PHASE: EROSION SIMULATION SYSTEM 🌊
+## EROSION SIMULATION SYSTEM 🌊
 
-Now that we have a **solid foundation** with advanced multi-layer terrain generation, the next major phase is implementing the **erosion simulation** - the core feature that made the original project special.
+Based on Mei, Decaudin & Hu, [Fast Hydraulic Erosion Simulation and Visualization on GPU](http://www-ljk.imag.fr/Publications/Basilic/com.lmc.publi.PUBLI_Inproceedings@117681e94b6_fff75c/FastErosion_PG07.pdf) (2007),
+with thermal erosion from Št'ava et al., [Interactive Terrain Modeling Using Hydraulic Erosion](https://cgg.mff.cuni.cz/~jaroslav/papers/2008-sca-erosim/2008-sca-erosiom-fin.pdf) (2008).
+The original WebGL implementation in `src-old/` was used as the reference for the port.
 
-## Phase 7: Water Flow Simulation 🔄 NEXT
+## Phase 7: Water Flow Simulation ✅ COMPLETE
 
-### 7.1 Compute Shader Architecture (NEW)
-We need to implement the physics-based erosion simulation using WebGPU compute shaders:
+### 7.1 Architecture
+`src/simulation/ErosionSimulation.ts` runs on its own grid (Sim Resolution, default 1024) using compute shaders in `src/shaders/erosion/`.
+Heights and water are stored in "cell units" so simulated slopes match rendered slopes.
 
-**Simulation State Textures:**
-- `heightTexture` - Current terrain height  
-- `waterTexture` - Water depth at each cell
-- `velocityTexture` - Water velocity (x, y components)
-- `sedimentTexture` - Suspended sediment amount
-- `fluxTexture` - Water flux between cells
+**Simulation state textures:** terrain (height + water, rg32float), flux (rgba32float), velocity (rg32float), sediment (r32float), base height (r32float), plus scratch textures for advection and thermal flux.
 
-### 7.2 Simulation Passes (TO IMPLEMENT)
-```typescript
-class ErosionSimulation {
-  // Compute pipelines for each simulation step
-  flowPipeline: GPUComputePipeline;        // Water flow calculation
-  sedimentPipeline: GPUComputePipeline;    // Sediment transport  
-  thermalPipeline: GPUComputePipeline;     // Thermal erosion
-  evaporationPipeline: GPUComputePipeline; // Water evaporation
-  
-  step(deltaTime: number) {
-    // 1. Add rain input
-    // 2. Calculate water flow (height gradient → velocity)
-    // 3. Transport sediment with water
-    // 4. Apply erosion (pickup/deposition)  
-    // 5. Thermal erosion (steep slopes → sediment)
-    // 6. Evaporate water
-    // 7. Update terrain height
-  }
-}
-```
+### 7.2 Simulation Passes (per step)
+1. `rain.wgsl` - global rain + rain brush (paper 3.1)
+2. `flow.wgsl` - outflow flux through virtual pipes (3.2.1)
+3. `water.wgsl` - water depth + velocity field (3.2.2/3.2.3)
+4. `erosion.wgsl` - erosion/deposition, capacity `Kc·sin(tilt)·|v|` (3.3)
+5. `advect.wgsl` ×2 + `maccormack.wgsl` - sediment transport (3.4)
+6. `smooth.wgsl` - removes single-cell spikes (from the original `average-frag.glsl`)
+7. `thermal-flux.wgsl` + `thermal-apply.wgsl` - talus-angle thermal erosion + evaporation (3.5)
 
-### 7.3 Shader Conversion Needed
-**From WebGL fragment shaders to WebGPU compute shaders:**
-
-- ✅ `terrain.wgsl` - COMPLETE (terrain rendering)
-- 🔄 `flow.wgsl` - Water flow simulation (from flow-frag.glsl)  
-- 🔄 `sediment.wgsl` - Sediment transport (from sediment-frag.glsl)
-- 🔄 `thermal.wgsl` - Thermal erosion (from thermalapply-frag.glsl)
-- 🔄 `rain.wgsl` - Rain addition (from rain-frag.glsl)
-- 🔄 `evaporation.wgsl` - Water evaporation (from eva-frag.glsl)
-
-### 7.4 Integration with Layer System
-**Key Challenge:** The layer system generates **procedural terrain**, but erosion needs to **modify actual height values**. We need:
-
-1. **Bake layers to texture:** Convert procedural layers → height texture for simulation
-2. **Simulation loop:** Run erosion on the baked texture  
-3. **Result visualization:** Display eroded terrain + water surface
+### 7.3 Integration with Layer System ✅
+- `LayerCompute` bakes the layers (shared `layers.wgsl`) into a **base** texture and copies it to the **display** texture the renderer draws.
+- After each step, `export.wgsl` writes `base + erosion delta` (plus water/sediment in G/B) into the display texture at any texture resolution.
+- When layers change, `rebase.wgsl` re-applies the carved delta onto the new base, so editing layers doesn't discard erosion.
+- `TerrainPicker` reads back a small height map so the rain brush (hold **C** + drag) lands where the mouse points.
 
 ## Phase 8: Interactive Erosion Tools 🎨 PLANNED
 
 ### 8.1 User Brush System
-- Rain brush: Add water at mouse position
+- ✅ Rain brush: Add water at mouse position
 - Elevation brush: Raise/lower terrain directly  
 - Sediment brush: Add/remove sediment
 - Permanent water sources: Rivers, lakes
 
-### 8.2 Real-time Controls
-- Erosion speed/intensity sliders
-- Rain amount controls  
-- Evaporation rate
-- Sediment capacity parameters
+### 8.2 Real-time Controls ✅
+- ✅ Erosion speed/intensity sliders
+- ✅ Rain amount controls  
+- ✅ Evaporation rate
+- ✅ Sediment capacity parameters
 
 ## Phase 9: Advanced Visualization 📊 PLANNED
 

@@ -3,7 +3,7 @@ import { OrbitCamera } from "./Camera";
 import { LayerStack, AlphaLayer } from "./LayerSystem";
 import { ColorSystem, ColorGroup } from "./ColorSystem";
 import { DOFSystem, DOFStop } from "./DOFSystem";
-import { ErosionSimulationMultiPass as ErosionSimulation } from "../simulation/ErosionSimulation.multipass.js";
+import { ErosionSimulation, DEFAULT_EROSION_PARAMETERS } from "../simulation/ErosionSimulation";
 
 /**
  * Application settings with lil-gui control panel
@@ -30,6 +30,7 @@ export class Settings {
     disableDisplacement: false,
     textureResolution: 2048, // Height texture resolution (512, 1024, 2048, 4096)
     meshResolution: 18, // Mesh detail level (4-25)
+    heightScale: 0.1, // Layer height -> displayed height
   };
 
   // Camera settings
@@ -53,24 +54,12 @@ export class Settings {
     backgroundColor: "#87ceeb", // Sky blue (135, 206, 235)
   };
 
-  // Erosion simulation settings
+  // Erosion simulation settings (see ErosionSimulation for the meaning of each parameter)
   public erosion = {
-    enabled: false,
-    rainRate: 0.01,
-    evaporationRate: 0.002,
-    sedimentCapacity: 4.0,
-    dissolutionConstant: 0.3,
-    depositionConstant: 0.3,
-    isRunning: false,
-    // Rain tools
-    globalRain: false,
-    mouseRainStrength: 0.1,
-    mouseRainRadius: 20,
-    // Control functions
-    start: () => this.startErosion(),
-    stop: () => this.stopErosion(),
-    reset: () => this.resetErosion(),
-    rainEverywhere: () => this.toggleGlobalRain(),
+    ...DEFAULT_EROSION_PARAMETERS,
+    running: false,
+    resolution: 1024,
+    showWater: true,
   };
 
   // Lighting settings
@@ -96,13 +85,14 @@ export class Settings {
   private gui: GUI;
   private onRegenerateCallback?: () => Promise<void> | void;
   private onColorChangeCallback?: () => void;
+  private onHeightScaleChangeCallback?: (heightScale: number) => void;
   private onImageUploadCallback?: (
     imageData: ImageData,
     layerId: string
   ) => void;
   private colorFolder?: GUI;
   private cameraInstance?: OrbitCamera;
-  public erosionSimulation?: ErosionSimulation; // Made public so it can be set after construction
+  public erosionSimulation?: ErosionSimulation; // Set via attachErosionSimulation once created
   private layersFolder?: GUI;
   private layerFolders: Map<string, GUI> = new Map();
   private colorGroupsFolder?: GUI;
@@ -110,9 +100,8 @@ export class Settings {
   private dofStopsFolder?: GUI;
   private dofStopFolders: Map<string, GUI> = new Map();
 
-  constructor(camera?: OrbitCamera, erosionSimulation?: ErosionSimulation) {
+  constructor(camera?: OrbitCamera) {
     this.cameraInstance = camera;
-    this.erosionSimulation = erosionSimulation;
     this.layerStack = new LayerStack();
     this.colorSystem = new ColorSystem();
     this.dofSystem = new DOFSystem();
@@ -144,6 +133,10 @@ export class Settings {
         this.updateColorFolderVisibility();
       });
     vizFolder.add(this.visualization, "disableDisplacement").name("Flat View");
+    vizFolder
+      .add(this.visualization, "heightScale", 0.01, 0.5, 0.01)
+      .name("Height Scale")
+      .onChange((value: number) => this.onHeightScaleChangeCallback?.(value));
     vizFolder
       .add(this.visualization, "meshResolution", 4, 25, 1)
       .name("Mesh Resolution")
@@ -246,11 +239,20 @@ export class Settings {
 
     // DOF Stops system
     this.setupDOFStopsGUI();
+  }
 
-    // Erosion simulation controls
-    if (this.erosionSimulation) {
+  /** Connect the erosion simulation and build its controls. */
+  public attachErosionSimulation(erosionSimulation: ErosionSimulation): void {
+    const firstAttach = !this.erosionSimulation;
+    this.erosionSimulation = erosionSimulation;
+    erosionSimulation.setParameters(this.erosion);
+    if (firstAttach) {
       this.setupErosionControls();
     }
+  }
+
+  public onHeightScaleChange(callback: (heightScale: number) => void): void {
+    this.onHeightScaleChangeCallback = callback;
   }
 
   public onRegenerate(callback: () => Promise<void> | void): void {
@@ -550,142 +552,68 @@ export class Settings {
 
   private setupErosionControls(): void {
     const erosionFolder = this.gui.addFolder("🌊 Erosion Simulation");
+    const apply = () => this.erosionSimulation?.setParameters(this.erosion);
 
-    // Simulation controls
-    const controlsFolder = erosionFolder.addFolder("Simulation");
-    controlsFolder.add(this.erosion, "start").name("▶ Start Simulation");
-    controlsFolder.add(this.erosion, "stop").name("⏸ Stop Simulation");
-    controlsFolder.add(this.erosion, "reset").name("🔄 Reset Simulation");
+    erosionFolder
+      .add(this.erosion, "running")
+      .name("▶ Running")
+      .listen()
+      .onChange((running: boolean) => (running ? this.startErosion() : this.stopErosion()));
+    erosionFolder.add({ reset: () => this.resetErosion() }, "reset").name("🔄 Reset Erosion");
+    erosionFolder.add(this.erosion, "stepsPerFrame", 1, 10, 1).name("Steps per Frame").onChange(apply);
+    erosionFolder
+      .add(this.erosion, "resolution", [256, 512, 1024, 2048])
+      .name("Sim Resolution")
+      .onChange((value: number) => this.erosionSimulation?.setResolution(Number(value)));
 
-    // Rain tools
-    const rainFolder = erosionFolder.addFolder("Rain Tools");
-    rainFolder.add(this.erosion, "rainEverywhere").name("🌧 Rain Everywhere");
-
-    // Instructions with better formatting
-    const instructions = rainFolder.addFolder("Instructions");
-    instructions
-      .add({ info: "1. Press 'C' key to activate rain tool" }, "info")
-      .name("🎯 Mouse Tool");
-    instructions
-      .add({ info: "2. Click or drag to add water" }, "info")
-      .name("💧 Add Water");
-    instructions
-      .add({ info: "3. Release 'C' key to deactivate" }, "info")
-      .name("🔧 Deactivate");
-
+    const rainFolder = erosionFolder.addFolder("Rain");
+    rainFolder.add(this.erosion, "globalRain").name("🌧 Rain Everywhere").onChange(apply);
+    rainFolder.add(this.erosion, "rainRate", 0.0, 1.0, 0.01).name("Rain Rate").onChange(apply);
+    rainFolder.add(this.erosion, "brushRadius", 0.005, 0.2, 0.005).name("Brush Radius").onChange(apply);
+    rainFolder.add(this.erosion, "brushStrength", 0.5, 20, 0.5).name("Brush Strength").onChange(apply);
+    rainFolder.add(this.erosion, "drainEdges").name("Drain at Edges").onChange(apply);
+    rainFolder.add(this.erosion, "showWater").name("Show Water");
     rainFolder
-      .add(this.erosion, "mouseRainStrength", 0.01, 0.5, 0.01)
-      .name("Mouse Rain Strength")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setMouseRainStrength(value);
-        }
-      });
+      .add({ info: "Hold C and drag on the terrain" }, "info")
+      .name("💧 Rain Brush")
+      .disable();
 
-    rainFolder
-      .add(this.erosion, "mouseRainRadius", 5, 50, 1)
-      .name("Mouse Rain Radius")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setMouseRainRadius(value);
-        }
-      });
+    const hydraulicFolder = erosionFolder.addFolder("Hydraulic Erosion");
+    hydraulicFolder.add(this.erosion, "sedimentCapacity", 0.005, 0.5, 0.005).name("Sediment Capacity (Kc)").onChange(apply);
+    hydraulicFolder.add(this.erosion, "dissolution", 0.001, 0.2, 0.001).name("Erosion Rate (Ks)").onChange(apply);
+    hydraulicFolder.add(this.erosion, "deposition", 0.001, 0.1, 0.001).name("Deposition Rate (Kd)").onChange(apply);
+    hydraulicFolder.add(this.erosion, "evaporation", 0.0, 0.5, 0.005).name("Evaporation (Ke)").onChange(apply);
+    hydraulicFolder.add(this.erosion, "minSlope", 0.0, 0.5, 0.01).name("Min Slope").onChange(apply);
+    hydraulicFolder.add(this.erosion, "velocityAdvection", 0.0, 0.5, 0.01).name("Flow Momentum").onChange(apply);
+    hydraulicFolder.add(this.erosion, "timeStep", 0.01, 0.1, 0.005).name("Time Step").onChange(apply);
 
-    // Simulation parameters
-    const paramsFolder = erosionFolder.addFolder("Parameters");
-    paramsFolder
-      .add(this.erosion, "rainRate", 0.0, 0.05, 0.001)
-      .name("Base Rain Rate")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setRainRate(value);
-        }
-      });
-    paramsFolder
-      .add(this.erosion, "evaporationRate", 0.0, 0.01, 0.0001)
-      .name("Evaporation Rate")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setEvaporationRate(value);
-        }
-      });
-    paramsFolder
-      .add(this.erosion, "sedimentCapacity", 1.0, 10.0, 0.1)
-      .name("Sediment Capacity")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setSedimentCapacity(value);
-        }
-      });
-    paramsFolder
-      .add(this.erosion, "dissolutionConstant", 0.1, 1.0, 0.05)
-      .name("Erosion Strength")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setDissolutionConstant(value);
-        }
-      });
-    paramsFolder
-      .add(this.erosion, "depositionConstant", 0.1, 1.0, 0.05)
-      .name("Deposition Strength")
-      .onChange((value: number) => {
-        if (this.erosionSimulation) {
-          this.erosionSimulation.setDepositionConstant(value);
-        }
-      });
-    
+    const thermalFolder = erosionFolder.addFolder("Thermal Erosion");
+    thermalFolder.add(this.erosion, "thermalRate", 0.0, 5.0, 0.1).name("Rate").onChange(apply);
+    thermalFolder.add(this.erosion, "talusAngle", 10, 80, 1).name("Talus Angle (°)").onChange(apply);
+    hydraulicFolder.add(this.erosion, "smoothThreshold", 0.0, 1.0, 0.01).name("Spike Smoothing").onChange(apply);
+
     erosionFolder.close();
-    controlsFolder.close();
     rainFolder.close();
-    instructions.close();
-    paramsFolder.close();
+    hydraulicFolder.close();
+    thermalFolder.close();
   }
 
-  private startErosion(): void {
+  public startErosion(): void {
     if (!this.erosionSimulation) return;
-
-    console.log("Starting erosion simulation...");
-    this.erosion.isRunning = true;
-
-    // Only initialize terrain if not already initialized (first start)
-    // This prevents overwriting existing erosion when resuming
-    if (!this.erosionSimulation.isTerrainInitialized()) {
-      console.log("🔧 First start - initializing terrain from layers");
-      this.erosionSimulation.initializeTerrain(this.layerStack);
-    } else {
-      console.log("🔧 Resuming existing simulation - preserving erosion data");
-    }
-    
+    this.erosion.running = true;
     this.erosionSimulation.start();
   }
 
-  private stopErosion(): void {
+  public stopErosion(): void {
     if (!this.erosionSimulation) return;
-
-    console.log("Stopping erosion simulation...");
-    this.erosion.isRunning = false;
+    this.erosion.running = false;
     this.erosionSimulation.stop();
   }
 
   private resetErosion(): void {
     if (!this.erosionSimulation) return;
-
-    console.log("Resetting erosion simulation...");
-    this.erosion.isRunning = false;
-    this.erosion.globalRain = false;
-    this.erosionSimulation.setGlobalRain(false);
-    this.erosionSimulation.reset(this.layerStack);
-  }
-
-  private toggleGlobalRain(): void {
-    if (!this.erosionSimulation) return;
-
-    this.erosion.globalRain = !this.erosion.globalRain;
-    this.erosionSimulation.setGlobalRain(this.erosion.globalRain);
-
-    console.log(
-      `Global rain ${this.erosion.globalRain ? "enabled" : "disabled"}`
-    );
+    this.erosion.running = false;
+    this.erosionSimulation.reset();
   }
 
   // Color System Management

@@ -16,29 +16,12 @@ struct Uniforms {
     shadowsEnabled: f32,           // 0.0 = off, 1.0 = on
     lightDirection: vec3f,
     shadowIntensity: f32,          // 0.0 to 1.0
+    heightScale: f32,              // texture height -> displayed height
+    showWater: f32,                // 0.0 = off, 1.0 = tint cells that hold water
+    _padding0: f32,
+    _padding1: f32,
 }
 
-// Layer data structure (matching LayerCompute)
-struct Layer {
-    layerType: f32,        // 0=noise, 1=circle, 2=image
-    blendMode: f32,        // 0=add, 1=mask, 2=multiply, 3=subtract
-    enabled: f32,          // 0.0=disabled, 1.0=enabled
-    strength: f32,         // 0.0 to 1.0
-    scale: f32,
-    octaves: f32,
-    persistence: f32,
-    lacunarity: f32,
-    amplitude: f32,
-    seed: f32,
-    centerX: f32,
-    centerY: f32,
-    radius: f32,
-    falloff: f32,
-    offsetX: f32,
-    offsetY: f32,
-    imageIndex: f32,
-    padding: f32,
-}
 
 // Color system structures
 struct ColorStop {
@@ -81,123 +64,6 @@ struct VertexOutput {
 @group(0) @binding(4) var imageSampler: sampler;
 @group(0) @binding(5) var<storage, read> colorGroups: array<ColorGroup, 8>;
 
-// High quality hash function for procedural noise
-fn hash22(p: vec2f) -> vec2f {
-    var p3 = fract(vec3f(p.x, p.y, p.x) * vec3f(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.xx + p3.yz) * p3.zy);
-}
-
-// High quality smooth interpolation
-fn quintic(t: f32) -> f32 {
-    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-
-// High-quality 2D noise function
-fn noise2D(p: vec2f) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    
-    // Four corner random values
-    let a = hash22(i).x;
-    let b = hash22(i + vec2f(1.0, 0.0)).x;
-    let c = hash22(i + vec2f(0.0, 1.0)).x;
-    let d = hash22(i + vec2f(1.0, 1.0)).x;
-    
-    // Smooth interpolation (using smoothstep instead of quintic)
-    let u = smoothstep(vec2f(0.0), vec2f(1.0), f);
-    
-    // Bilinear interpolation
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
-}
-
-// Procedural gradient noise (keeping as backup)
-fn gradientNoise(p: vec2f, seed: f32) -> f32 {
-    let i = floor(p + seed * 137.1);
-    let f = fract(p + seed * 137.1);
-    
-    // Get gradient vectors for each corner
-    let ga = hash22(i) * 2.0 - 1.0;
-    let gb = hash22(i + vec2f(1.0, 0.0)) * 2.0 - 1.0;
-    let gc = hash22(i + vec2f(0.0, 1.0)) * 2.0 - 1.0;
-    let gd = hash22(i + vec2f(1.0, 1.0)) * 2.0 - 1.0;
-    
-    // Calculate dot products with distance vectors
-    let va = dot(ga, f);
-    let vb = dot(gb, f - vec2f(1.0, 0.0));
-    let vc = dot(gc, f - vec2f(0.0, 1.0));
-    let vd = dot(gd, f - vec2f(1.0, 1.0));
-    
-    // Smooth interpolation
-    let u = quintic(f.x);
-    let v = quintic(f.y);
-    
-    return mix(mix(va, vb, u), mix(vc, vd, u), v);
-}
-
-fn octaveNoise(x: f32, y: f32, octaves: f32, persistence: f32, lacunarity: f32, seed: f32) -> f32 {
-    var total = 0.0;
-    var frequency = 1.0;
-    var amplitude = 1.0;
-    var maxValue = 0.0;
-    
-    let iOctaves = i32(octaves);
-    for (var i = 0; i < iOctaves; i++) {
-        // Use the simpler, higher-quality noise function
-        let noiseValue = noise2D(vec2f(x * frequency, y * frequency) + vec2f(seed + f32(i) * 100.0));
-        total += noiseValue * amplitude;
-        maxValue += amplitude;
-        amplitude *= persistence;
-        frequency *= lacunarity;
-    }
-    
-    return total / maxValue;
-}
-
-// Layer evaluation functions
-fn evaluateNoiseLayer(layer: Layer, uv: vec2f) -> f32 {
-    let noise = octaveNoise(
-        uv.x * layer.scale, 
-        uv.y * layer.scale, 
-        layer.octaves, 
-        layer.persistence, 
-        layer.lacunarity, 
-        layer.seed
-    );
-    
-    // Normalize noise from [-1, 1] to [0, 1] range
-    // Then scale by amplitude to control intensity
-    let normalizedNoise = (noise + 1.0) * 0.5; // Convert [-1,1] to [0,1]
-    let height = normalizedNoise * layer.amplitude;
-    
-    // Don't clamp here - allow values to accumulate beyond 1.0
-    return height;
-}
-
-fn evaluateCircleLayer(layer: Layer, uv: vec2f) -> f32 {
-    // Convert UV (0-1) to world coordinates (-5 to 5)
-    let worldPos = (uv - 0.5) * 10.0;
-    let center = vec2f(layer.centerX, layer.centerY);
-    let dist = distance(worldPos, center);
-    
-    let outerRadius = layer.radius;
-    let innerRadius = outerRadius * (1.0 - layer.falloff);
-    
-    if (dist <= innerRadius) {
-        return 1.0;
-    } else if (dist <= outerRadius) {
-        return 1.0 - smoothstep(innerRadius, outerRadius, dist);
-    } else {
-        return 0.0;
-    }
-}
-
-fn evaluateImageLayer(layer: Layer, uv: vec2f) -> f32 {
-    let offsetUV = uv + vec2f(layer.offsetX, layer.offsetY);
-    let clampedUV = clamp(offsetUV, vec2f(0.0), vec2f(1.0));
-    let imageIndex = i32(layer.imageIndex);
-    return textureSampleLevel(imageTextures, imageSampler, clampedUV, imageIndex, 0.0).r;
-}
 
 // Color System Functions
 
@@ -365,93 +231,33 @@ fn evaluateAllColorGroups(masterAlpha: f32, uv: vec2f) -> vec3f {
 }
 
 
-// Blend mode functions
-fn blendLayers(base: f32, overlay: f32, blendMode: f32, strength: f32) -> f32 {
-    let weightedOverlay = overlay * strength;
-    
-    let blendModeInt = i32(blendMode);
-    switch (blendModeInt) {
-        case 0: { // Add
-            return base + weightedOverlay;
-        }
-        case 1: { // Mask - overlay controls visibility of base
-            return base * clamp(weightedOverlay, 0.0, 1.0);
-        }
-        case 2: { // Multiply - base and overlay multiply together
-            return base * overlay * strength;
-        }
-        case 3: { // Subtract
-            return max(base - weightedOverlay, 0.0);
-        }
-        default: {
-            return base;
-        }
-    }
+
+// Bilinear sample of the height texture (rgba32float is not filterable).
+// r = terrain height, g = water depth (erosion cell units), b = sediment
+fn sampleTerrain(uv: vec2f) -> vec4f {
+    let size = vec2i(textureDimensions(heightTexture));
+    let p = clamp(uv, vec2f(0.0), vec2f(1.0)) * vec2f(size) - 0.5;
+    let f = floor(p);
+    let w = p - f;
+    let c = vec2i(f);
+    let maxC = size - 1;
+    let a = textureLoad(heightTexture, clamp(c, vec2i(0), maxC), 0);
+    let b = textureLoad(heightTexture, clamp(c + vec2i(1, 0), vec2i(0), maxC), 0);
+    let d = textureLoad(heightTexture, clamp(c + vec2i(0, 1), vec2i(0), maxC), 0);
+    let e = textureLoad(heightTexture, clamp(c + vec2i(1, 1), vec2i(0), maxC), 0);
+    return mix(mix(a, b, w.x), mix(d, e, w.x), w.y);
 }
 
-// Calculate height from layers at given UV position
-fn calculateHeight(uv: vec2f) -> f32 {
-    var result = 0.0;
-    let layerCount = arrayLength(&layers);
-    var processedLayers = 0u;
-    
-    // Process each layer in order
-    for (var i = 0u; i < layerCount && i < 5u; i++) {
-        let layer = layers[i];
-        
-        // Skip disabled layers
-        if (layer.enabled < 0.5) {
-            continue;
-        }
-        
-        processedLayers += 1u;
-        
-        var layerValue = 0.0;
-        let layerTypeInt = i32(layer.layerType);
-        
-        // Evaluate layer based on type
-        switch (layerTypeInt) {
-            case 0: { // Noise
-                layerValue = evaluateNoiseLayer(layer, uv);
-            }
-            case 1: { // Circle
-                layerValue = evaluateCircleLayer(layer, uv);
-            }
-            case 2: { // Image
-                layerValue = evaluateImageLayer(layer, uv);
-            }
-            default: {
-                layerValue = 0.0;
-            }
-        }
-        
-        // Blend with accumulated result
-        if (processedLayers == 1u) {
-            // First layer is the base
-            result = layerValue * layer.strength;
-        } else {
-            result = blendLayers(result, layerValue, layer.blendMode, layer.strength);
-        }
-    }
-    
-    // Don't clamp final result - allow accumulated heights beyond 1.0
-    return max(result, 0.0);
+fn terrainHeight(uv: vec2f) -> f32 {
+    return sampleTerrain(uv).r * uniforms.heightScale;
 }
 
 @vertex
 fn vertexMain(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
     var output: VertexOutput;
     
-    // Calculate base height procedurally from layers
-    let proceduralHeight = calculateHeight(input.uv);
-    
-    // Sample height texture from erosion simulation using textureLoad (vertex shader compatible)
-    let textureSize = textureDimensions(heightTexture);
-    let texelCoord = vec2<i32>(input.uv * vec2<f32>(textureSize));
-    let textureHeight = textureLoad(heightTexture, texelCoord, 0).r;
-    
-    // Blend procedural and texture height (texture takes priority for erosion effects)
-    let height = mix(proceduralHeight, textureHeight, 0.9);
+    // Height comes from the layer texture, which includes erosion when it has run
+    let height = terrainHeight(input.uv);
     
     // Displace all vertices at Y >= 0 (top surface and side top edges)
     // Only bottom vertices (Y < 0) and side bottom edges remain at their original positions
@@ -486,32 +292,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
         return vec4f(gray, 1.0);
     }
     
-    // Calculate proper normal from combined heights (procedural + texture) for accurate lighting
-    let texelSize = 1.0 / 512.0;
-    
-    // Sample heights from both procedural and texture sources for normals
-    let proceduralL = calculateHeight(input.uv + vec2f(-texelSize, 0.0));
-    let proceduralR = calculateHeight(input.uv + vec2f(texelSize, 0.0));
-    let proceduralD = calculateHeight(input.uv + vec2f(0.0, -texelSize));
-    let proceduralU = calculateHeight(input.uv + vec2f(0.0, texelSize));
-    
-    // Sample height texture using textureLoad (convert UV to texel coordinates)
-    let textureSize = textureDimensions(heightTexture);
-    let texelL = vec2<i32>((input.uv + vec2f(-texelSize, 0.0)) * vec2<f32>(textureSize));
-    let texelR = vec2<i32>((input.uv + vec2f(texelSize, 0.0)) * vec2<f32>(textureSize));
-    let texelD = vec2<i32>((input.uv + vec2f(0.0, -texelSize)) * vec2<f32>(textureSize));
-    let texelU = vec2<i32>((input.uv + vec2f(0.0, texelSize)) * vec2<f32>(textureSize));
-    
-    let textureL = textureLoad(heightTexture, texelL, 0).r;
-    let textureR = textureLoad(heightTexture, texelR, 0).r;
-    let textureD = textureLoad(heightTexture, texelD, 0).r;
-    let textureU = textureLoad(heightTexture, texelU, 0).r;
-    
-    // Blend procedural and texture heights for normal calculation
-    let heightL = mix(proceduralL, textureL, 0.8);
-    let heightR = mix(proceduralR, textureR, 0.8);
-    let heightD = mix(proceduralD, textureD, 0.8);
-    let heightU = mix(proceduralU, textureU, 0.8);
+    // Normals from neighbouring texels of the height texture
+    let texelSize = 1.0 / f32(textureDimensions(heightTexture).x);
+    let heightL = terrainHeight(input.uv + vec2f(-texelSize, 0.0));
+    let heightR = terrainHeight(input.uv + vec2f(texelSize, 0.0));
+    let heightD = terrainHeight(input.uv + vec2f(0.0, -texelSize));
+    let heightU = terrainHeight(input.uv + vec2f(0.0, texelSize));
     
     // Calculate tangent vectors scaled by displacement
     let scale = 5.0; // Match displacement scale
@@ -563,6 +349,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     
     // Apply lighting
     var finalColor = color * diffuse;
+
+    // Water from the erosion simulation
+    if (isTopSurface && uniforms.showWater > 0.5) {
+        let water = sampleTerrain(input.uv).g;
+        // Fade in from a thin film to fully covered so rain sheets stay subtle
+        let coverage = smoothstep(0.05, 1.5, water);
+        let waterColor = vec3f(0.12, 0.32, 0.55) * max(lightDir.y, 0.5);
+        finalColor = mix(finalColor, waterColor, coverage * 0.9);
+    }
     
     // Draw a sun sphere in the sky for visual reference
     // Calculate sun position in view space (light direction points FROM sun)

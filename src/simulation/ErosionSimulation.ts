@@ -1,480 +1,537 @@
 import { GPUContext } from "../core/GPUContext";
 import { LayerCompute } from "../core/LayerCompute";
-import flowSimulationShader from "../shaders/flow.wgsl?raw";
+import commonShader from "../shaders/erosion/common.wgsl?raw";
+import rainShader from "../shaders/erosion/rain.wgsl?raw";
+import flowShader from "../shaders/erosion/flow.wgsl?raw";
+import waterShader from "../shaders/erosion/water.wgsl?raw";
+import erosionShader from "../shaders/erosion/erosion.wgsl?raw";
+import advectShader from "../shaders/erosion/advect.wgsl?raw";
+import macCormackShader from "../shaders/erosion/maccormack.wgsl?raw";
+import smoothShader from "../shaders/erosion/smooth.wgsl?raw";
+import thermalFluxShader from "../shaders/erosion/thermal-flux.wgsl?raw";
+import thermalApplyShader from "../shaders/erosion/thermal-apply.wgsl?raw";
+import rebaseShader from "../shaders/erosion/rebase.wgsl?raw";
+import exportShader from "../shaders/erosion/export.wgsl?raw";
+
+// Must match the terrain plane (createPlane scale) and the displacement in terrain.wgsl.
+export const TERRAIN_WORLD_SIZE = 10.0;
+export const TERRAIN_DISPLACEMENT_SCALE = 5.0;
+
+export interface ErosionParameters {
+  stepsPerFrame: number;
+  timeStep: number;
+  pipeLength: number;
+  pipeArea: number;
+  gravity: number;
+  sedimentCapacity: number; // Kc
+  dissolution: number; // Ks
+  deposition: number; // Kd
+  evaporation: number; // Ke
+  minSlope: number;
+  velocityAdvection: number;
+  thermalRate: number;
+  talusAngle: number; // degrees
+  smoothThreshold: number; // spike smoothing, in cell units (0 = off)
+  globalRain: boolean;
+  rainRate: number;
+  drainEdges: boolean;
+  brushRadius: number; // fraction of the terrain width
+  brushStrength: number;
+}
+
+// Defaults follow the original WebGL implementation (src-old/main.ts).
+export const DEFAULT_EROSION_PARAMETERS: ErosionParameters = {
+  stepsPerFrame: 3,
+  timeStep: 0.05,
+  pipeLength: 0.8,
+  pipeArea: 0.6,
+  gravity: 0.8,
+  sedimentCapacity: 0.06,
+  dissolution: 0.036,
+  deposition: 0.006,
+  evaporation: 0.06,
+  minSlope: 0.1,
+  velocityAdvection: 0.2,
+  thermalRate: 0.5,
+  talusAngle: 60,
+  smoothThreshold: 0.1,
+  globalRain: false,
+  rainRate: 0.02,
+  drainEdges: true,
+  brushRadius: 0.04,
+  brushStrength: 4.0,
+};
+
+const WORKGROUP = 8;
 
 /**
- * Physics-based erosion simulation using WebGPU compute shaders
- * Implements hydraulic erosion with water flow, sediment transport, and terrain modification
+ * GPU hydraulic + thermal erosion following Mei et al. 2007
+ * ("Fast Hydraulic Erosion Simulation and Visualization on GPU").
+ *
+ * Per step: rain -> outflow flux -> water depth & velocity -> erosion/deposition
+ * -> MacCormack sediment advection -> spike smoothing -> thermal erosion
+ * -> evaporation.
+ *
+ * The simulation runs on its own grid and writes "layer base + erosion delta"
+ * into the LayerCompute display texture, so it works with any texture resolution
+ * and survives layer edits (the carved delta is re-applied to the new base).
  */
 export class ErosionSimulation {
-  private gpuContext: GPUContext;
+  private device: GPUDevice;
   private layerCompute: LayerCompute;
+  private resolution: number;
+  private heightScale: number;
+  private stateHeightUnits: number;
+  private parameters: ErosionParameters = { ...DEFAULT_EROSION_PARAMETERS };
+  private running = false;
+  private parity = 0;
+  private time = 0;
+  private brush: { u: number; v: number } | null = null;
 
-  // Simulation textures (1024x1024 for high resolution)
-  private heightTexture!: GPUTexture;
-  private waterTexture!: GPUTexture;
-  private velocityTexture!: GPUTexture; // RG = velocity X/Y, BA = unused
-  private sedimentTexture!: GPUTexture; // R = suspended sediment, GBA = unused
-  private newHeightTexture!: GPUTexture; // Double buffer for height updates
-  private newWaterTexture!: GPUTexture; // Double buffer for water updates
+  // Simulation state (index 0 holds the state between steps, index 1 is scratch)
+  private terrain!: GPUTexture[]; // rg32float: height, water (index 2 is extra scratch)
+  private flux!: GPUTexture[]; // rgba32float: left, right, down, up
+  private velocity!: GPUTexture[]; // rg32float
+  private sediment!: GPUTexture[]; // r32float
+  private simBase!: GPUTexture[]; // r32float: base height the delta is relative to
+  private advectA!: GPUTexture;
+  private advectB!: GPUTexture;
+  private thermalFlux!: GPUTexture;
 
-  // Compute pipelines for simulation steps
-  private flowPipeline!: GPUComputePipeline;
-  private sedimentPipeline: GPUComputePipeline | null = null;
-  private thermalPipeline: GPUComputePipeline | null = null;
-  private evaporationPipeline: GPUComputePipeline | null = null;
+  private simParamsBuffer: GPUBuffer;
+  private transferParamsBuffer: GPUBuffer;
 
-  // Bind groups and buffers
-  private flowBindGroup!: GPUBindGroup;
-  private parameterBuffer!: GPUBuffer;
+  private rainPipeline: GPUComputePipeline;
+  private flowPipeline: GPUComputePipeline;
+  private waterPipeline: GPUComputePipeline;
+  private erosionPipeline: GPUComputePipeline;
+  private advectForwardPipeline: GPUComputePipeline;
+  private advectBackwardPipeline: GPUComputePipeline;
+  private macCormackPipeline: GPUComputePipeline;
+  private smoothPipeline: GPUComputePipeline;
+  private thermalFluxPipeline: GPUComputePipeline;
+  private thermalApplyPipeline: GPUComputePipeline;
+  private rebasePipeline: GPUComputePipeline;
+  private exportPipeline: GPUComputePipeline;
 
-  // Simulation parameters
-  private parameters = {
-    deltaTime: 1.0 / 60.0, // 60 FPS simulation timestep
-    rainRate: 0.01, // Water added per timestep
-    evaporationRate: 0.002, // Water lost per timestep
-    gravity: 9.81, // Gravitational acceleration
-    pipeCrossSection: 1.0, // Cross-sectional area of virtual pipes
-    pipeLength: 1.0, // Length of virtual pipes between cells
-    sedimentCapacity: 4.0, // Maximum sediment a water cell can carry
-    dissolutionConstant: 0.3, // How quickly terrain dissolves
-    depositionConstant: 0.3, // How quickly sediment is deposited
-    thermalRate: 0.1, // Thermal erosion strength
-    minSlope: 0.05, // Minimum slope for thermal erosion
-    // Rain input controls
-    globalRainEnabled: false, // Whether to rain everywhere
-    mouseRainEnabled: false, // Whether mouse rain tool is active
-    mouseRainStrength: 0.1, // Strength of mouse rain
-    mouseRainRadius: 20.0, // Radius of mouse rain in pixels
-  };
+  private rainBindGroup!: GPUBindGroup;
+  private smoothBindGroup!: GPUBindGroup;
+  private thermalFluxBindGroup!: GPUBindGroup;
+  private thermalApplyBindGroup!: GPUBindGroup;
+  private flowBindGroups!: GPUBindGroup[];
+  private waterBindGroups!: GPUBindGroup[];
+  private erosionBindGroups!: GPUBindGroup[];
+  private advectForwardBindGroups!: GPUBindGroup[];
+  private advectBackwardBindGroups!: GPUBindGroup[];
+  private macCormackBindGroups!: GPUBindGroup[];
+  private rebaseBindGroup!: GPUBindGroup;
+  private exportBindGroup!: GPUBindGroup;
 
-  // Mouse interaction state
-  private rainInputTexture!: GPUTexture;
-  private rainInputBuffer!: GPUBuffer;
-  private mouseRainActive = false;
-  private mouseRainPosition = { x: 0, y: 0 };
-
-  private readonly textureSize = 1024;
-  private isRunning = false;
-
-  constructor(gpuContext: GPUContext, layerCompute: LayerCompute) {
-    console.log(
-      "🔥 FULL ErosionSimulation constructor starting - WITH COMPUTE PIPELINES! 🔥"
-    );
-    this.gpuContext = gpuContext;
+  constructor(
+    gpuContext: GPUContext,
+    layerCompute: LayerCompute,
+    resolution = 1024,
+    heightScale = 0.1
+  ) {
+    this.device = gpuContext.device;
     this.layerCompute = layerCompute;
+    this.resolution = resolution;
+    this.heightScale = heightScale;
+    this.stateHeightUnits = this.heightUnits();
 
-    this.initializeTextures();
-    this.initializeBuffers();
-    this.initializePipelines();
-    console.log("✓ ErosionSimulation initialized successfully");
-  }
-
-  private initializeTextures() {
-    console.log("Initializing erosion simulation textures...");
-
-    // Read-only texture descriptor for textures accessed as texture_2d<f32> in shader
-    const readOnlyTextureDescriptor: GPUTextureDescriptor = {
-      size: { width: this.textureSize, height: this.textureSize },
-      format: "rgba32float",
-      usage:
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.COPY_DST,
-    };
-
-    // Write-only texture descriptor for textures accessed as texture_storage_2d<rgba32float, write>
-    const writeOnlyTextureDescriptor: GPUTextureDescriptor = {
-      size: { width: this.textureSize, height: this.textureSize },
-      format: "rgba32float",
-      usage:
-        GPUTextureUsage.STORAGE_BINDING |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.COPY_DST,
-    };
-
-    // Create simulation state textures (read-only in shader)
-    this.heightTexture = this.gpuContext.device.createTexture({
-      ...readOnlyTextureDescriptor,
-      label: "erosion-height-texture",
-    });
-
-    this.waterTexture = this.gpuContext.device.createTexture({
-      ...readOnlyTextureDescriptor,
-      label: "erosion-water-texture",
-    });
-
-    this.velocityTexture = this.gpuContext.device.createTexture({
-      size: { width: this.textureSize, height: this.textureSize },
-      format: "rg32float", // RG32Float supports read_write access
-      usage:
-        GPUTextureUsage.STORAGE_BINDING |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_SRC,
-      label: "erosion-velocity-texture",
-    });
-
-    this.sedimentTexture = this.gpuContext.device.createTexture({
-      ...readOnlyTextureDescriptor,
-      label: "erosion-sediment-texture",
-    });
-
-    // Double buffers for ping-pong updates (write-only in shader)
-    this.newHeightTexture = this.gpuContext.device.createTexture({
-      ...writeOnlyTextureDescriptor,
-      label: "erosion-new-height-texture",
-    });
-
-    this.newWaterTexture = this.gpuContext.device.createTexture({
-      ...writeOnlyTextureDescriptor,
-      label: "erosion-new-water-texture",
-    });
-
-    // Create rain input texture for localized rain effects
-    this.rainInputTexture = this.gpuContext.device.createTexture({
-      size: { width: this.textureSize, height: this.textureSize },
-      format: "r32float", // Single channel for rain intensity
-      usage:
-        GPUTextureUsage.STORAGE_BINDING |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_DST,
-      label: "erosion-rain-input-texture",
-    });
-
-    console.log("✓ Erosion textures created");
-  }
-
-  private initializeBuffers() {
-    // Create parameter buffer for simulation constants (expanded for rain controls)
-    this.parameterBuffer = this.gpuContext.device.createBuffer({
-      size: 20 * 4, // 20 floats * 4 bytes each (expanded from 12)
+    this.simParamsBuffer = this.device.createBuffer({
+      label: "erosion-sim-params",
+      size: 24 * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      label: "erosion-parameters",
     });
-
-    // Create rain input buffer for mouse position data
-    this.rainInputBuffer = this.gpuContext.device.createBuffer({
-      size: 4 * 4, // 4 floats: mouseX, mouseY, radius, strength
+    this.transferParamsBuffer = this.device.createBuffer({
+      label: "erosion-transfer-params",
+      size: 4 * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      label: "erosion-rain-input",
     });
 
-    this.updateParameterBuffer();
-    this.clearRainInput();
+    this.rainPipeline = this.createPipeline("rain", rainShader);
+    this.flowPipeline = this.createPipeline("flow", flowShader);
+    this.waterPipeline = this.createPipeline("water", waterShader);
+    this.erosionPipeline = this.createPipeline("erosion", erosionShader);
+    this.advectForwardPipeline = this.createPipeline("advect-forward", advectShader, { ADVECT_SIGN: 1 });
+    this.advectBackwardPipeline = this.createPipeline("advect-backward", advectShader, { ADVECT_SIGN: -1 });
+    this.macCormackPipeline = this.createPipeline("maccormack", macCormackShader);
+    this.smoothPipeline = this.createPipeline("smooth", smoothShader);
+    this.thermalFluxPipeline = this.createPipeline("thermal-flux", thermalFluxShader);
+    this.thermalApplyPipeline = this.createPipeline("thermal-apply", thermalApplyShader);
+    this.rebasePipeline = this.createPipeline("rebase", rebaseShader);
+    this.exportPipeline = this.createPipeline("export", exportShader);
+
+    this.createTextures();
+    this.createSimulationBindGroups();
+    this.createTransferBindGroups();
   }
 
-  private updateParameterBuffer() {
-    const data = new Float32Array([
-      this.parameters.deltaTime,
-      this.parameters.rainRate,
-      this.parameters.evaporationRate,
-      this.parameters.gravity,
-      this.parameters.pipeCrossSection,
-      this.parameters.pipeLength,
-      this.parameters.sedimentCapacity,
-      this.parameters.dissolutionConstant,
-      this.parameters.depositionConstant,
-      this.parameters.thermalRate,
-      this.parameters.minSlope,
-      0.0, // Padding
-      // New rain controls
-      this.parameters.globalRainEnabled ? 1.0 : 0.0,
-      this.parameters.mouseRainEnabled ? 1.0 : 0.0,
-      this.parameters.mouseRainStrength,
-      this.parameters.mouseRainRadius,
-      this.mouseRainActive ? 1.0 : 0.0,
-      this.mouseRainPosition.x,
-      this.mouseRainPosition.y,
-      0.0, // Padding
-    ]);
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
 
-    this.gpuContext.device.queue.writeBuffer(this.parameterBuffer, 0, data);
+  public start(): void {
+    this.running = true;
   }
 
-  private clearRainInput() {
-    // Clear rain input texture to zero
-    const commandEncoder = this.gpuContext.device.createCommandEncoder();
-
-    // We'll implement this when we add the rain clear shader
-    // For now, just update the mouse rain state
-    this.mouseRainActive = false;
-    this.updateParameterBuffer();
-
-    this.gpuContext.device.queue.submit([commandEncoder.finish()]);
+  public stop(): void {
+    this.running = false;
   }
 
-  private initializePipelines() {
-    console.log("Creating erosion compute pipelines...");
+  public isRunning(): boolean {
+    return this.running;
+  }
 
-    try {
-      // Create flow simulation pipeline with auto layout
-      this.flowPipeline = this.gpuContext.device.createComputePipeline({
-        layout: "auto",
-        compute: {
-          module: this.gpuContext.device.createShaderModule({
-            code: flowSimulationShader,
-            label: "erosion-flow-shader-module",
-          }),
-          entryPoint: "flowMain",
-        },
-        label: "erosion-flow-pipeline",
-      });
+  public getResolution(): number {
+    return this.resolution;
+  }
 
-      console.log("✓ Flow pipeline created successfully");
+  public getParameters(): Readonly<ErosionParameters> {
+    return this.parameters;
+  }
 
-      // Create bind group AFTER pipeline is successfully created
-      this.createBindGroup();
-    } catch (error) {
-      console.error("Failed to create erosion pipeline:", error);
-      throw error;
+  public setParameters(parameters: Partial<ErosionParameters>): void {
+    const target = this.parameters as unknown as Record<string, unknown>;
+    for (const key of Object.keys(DEFAULT_EROSION_PARAMETERS)) {
+      const value = (parameters as Record<string, unknown>)[key];
+      if (value !== undefined) target[key] = value;
     }
   }
 
-  private createBindGroup() {
-    try {
-      this.flowBindGroup = this.gpuContext.device.createBindGroup({
-        layout: this.flowPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.parameterBuffer } },
-          { binding: 1, resource: this.heightTexture.createView() },
-          { binding: 2, resource: this.waterTexture.createView() },
-          { binding: 3, resource: this.velocityTexture.createView() },
-          { binding: 4, resource: this.newHeightTexture.createView() },
-          { binding: 5, resource: this.newWaterTexture.createView() },
-        ],
-        label: "erosion-flow-bind-group",
-      });
+  /** Rain brush position in terrain UV space, or null when not painting. */
+  public setBrush(uv: { u: number; v: number } | null): void {
+    this.brush = uv;
+  }
 
-      console.log("✓ Flow bind group created successfully");
-    } catch (error) {
-      console.error("Failed to create flow bind group:", error);
-      throw error;
+  /** Advance the simulation (if running) and update the displayed terrain. */
+  public step(): void {
+    if (!this.running) return;
+
+    const steps = Math.max(1, Math.round(this.parameters.stepsPerFrame));
+    this.time += steps * this.parameters.timeStep;
+    this.writeSimParams();
+
+    const encoder = this.device.createCommandEncoder({ label: "erosion-step" });
+    const pass = encoder.beginComputePass({ label: "erosion-step" });
+    const groups = Math.ceil(this.resolution / WORKGROUP);
+
+    for (let i = 0; i < steps; i++) {
+      const p = this.parity;
+      this.dispatch(pass, this.rainPipeline, this.rainBindGroup, groups);
+      this.dispatch(pass, this.flowPipeline, this.flowBindGroups[p], groups);
+      this.dispatch(pass, this.waterPipeline, this.waterBindGroups[p], groups);
+      this.dispatch(pass, this.erosionPipeline, this.erosionBindGroups[p], groups);
+      this.dispatch(pass, this.advectForwardPipeline, this.advectForwardBindGroups[p], groups);
+      this.dispatch(pass, this.advectBackwardPipeline, this.advectBackwardBindGroups[p], groups);
+      this.dispatch(pass, this.macCormackPipeline, this.macCormackBindGroups[p], groups);
+      this.dispatch(pass, this.smoothPipeline, this.smoothBindGroup, groups);
+      this.dispatch(pass, this.thermalFluxPipeline, this.thermalFluxBindGroup, groups);
+      this.dispatch(pass, this.thermalApplyPipeline, this.thermalApplyBindGroup, groups);
+      this.parity = 1 - p;
     }
+
+    pass.end();
+    this.encodeExport(encoder);
+    this.device.queue.submit([encoder.finish()]);
   }
 
   /**
-   * Initialize simulation with terrain data from LayerCompute
+   * Call after the layer stack was recomputed. Re-applies the erosion carved so
+   * far onto the new base terrain and refreshes the displayed texture.
    */
-  async initializeTerrain(layerStack?: any) {
-    console.log("Baking procedural layers into height texture for erosion...");
-
-    // Force LayerCompute to regenerate with current layers if provided
-    if (layerStack) {
-      await this.layerCompute.computeLayers(layerStack);
-    }
-
-    // Use LayerCompute to generate the initial height texture
-    const computedTexture = this.layerCompute.getOutputTexture();
-
-    // Verify texture formats match
-    console.log("LayerCompute output texture format:", computedTexture.format);
-    console.log(
-      "ErosionSimulation height texture format:",
-      this.heightTexture.format
-    );
-
-    if (computedTexture.format !== this.heightTexture.format) {
-      console.error(
-        "TEXTURE FORMAT MISMATCH! Cannot copy textures with different formats."
-      );
-      console.error(
-        "Source:",
-        computedTexture.format,
-        "Destination:",
-        this.heightTexture.format
-      );
-      return;
-    }
-
-    // Copy the computed height data to our erosion height texture
-    const commandEncoder = this.gpuContext.device.createCommandEncoder();
-
-    commandEncoder.copyTextureToTexture(
-      { texture: computedTexture },
-      { texture: this.heightTexture },
-      { width: this.textureSize, height: this.textureSize }
-    );
-
-    this.gpuContext.device.queue.submit([commandEncoder.finish()]);
-
-    // Clear water, velocity, and sediment textures
-    this.clearSimulationState();
-
-    console.log("✓ Terrain initialized for erosion simulation");
+  public syncWithBase(): void {
+    this.rebase(true);
   }
 
-  private clearSimulationState() {
-    // Clear water, velocity, and sediment to zero
-    const commandEncoder = this.gpuContext.device.createCommandEncoder();
-
-    // We'll implement texture clearing here when we add the clear shaders
-    // For now, they'll start with undefined data which is acceptable for testing
-
-    this.gpuContext.device.queue.submit([commandEncoder.finish()]);
-  }
-
-  /**
-   * Run a single simulation timestep
-   */
-  step() {
-    if (!this.isRunning) return;
-
-    const commandEncoder = this.gpuContext.device.createCommandEncoder();
-    const computePass = commandEncoder.beginComputePass();
-
-    // 1. Water flow simulation
-    computePass.setPipeline(this.flowPipeline);
-    computePass.setBindGroup(0, this.flowBindGroup);
-
-    // Dispatch compute threads (8x8 workgroup size)
-    const dispatchX = Math.ceil(this.textureSize / 8);
-    const dispatchY = Math.ceil(this.textureSize / 8);
-    computePass.dispatchWorkgroups(dispatchX, dispatchY);
-
-    computePass.end();
-    this.gpuContext.device.queue.submit([commandEncoder.finish()]);
-
-    // Swap buffers (ping-pong)
-    this.swapBuffers();
-  }
-
-  private swapBuffers() {
-    // Swap height textures
-    const tempHeight = this.heightTexture;
-    this.heightTexture = this.newHeightTexture;
-    this.newHeightTexture = tempHeight;
-
-    // Swap water textures
-    const tempWater = this.waterTexture;
-    this.waterTexture = this.newWaterTexture;
-    this.newWaterTexture = tempWater;
-
-    // Update bind group with swapped textures
-    this.updateBindGroup();
-  }
-
-  private updateBindGroup() {
-    // Recreate bind group with swapped textures
-    this.createBindGroup();
-  }
-
-  // Public control methods
-  start() {
-    console.log("Starting erosion simulation...");
-    this.isRunning = true;
-  }
-
-  stop() {
-    console.log("Stopping erosion simulation...");
-    this.isRunning = false;
-  }
-
-  reset(layerStack?: any) {
-    console.log("Resetting erosion simulation...");
+  /** Remove all water, sediment and erosion, returning to the layer terrain. */
+  public reset(): void {
     this.stop();
-    this.initializeTerrain(layerStack);
+    const encoder = this.device.createCommandEncoder({ label: "erosion-reset" });
+    for (const texture of [
+      ...this.flux,
+      ...this.velocity,
+      ...this.sediment,
+      this.advectA,
+      this.advectB,
+      this.thermalFlux,
+    ]) {
+      encoder
+        .beginRenderPass({
+          colorAttachments: [
+            { view: texture.createView(), loadOp: "clear", storeOp: "store", clearValue: [0, 0, 0, 0] },
+          ],
+        })
+        .end();
+    }
+    this.device.queue.submit([encoder.finish()]);
+    this.rebase(false);
   }
 
-  // Parameter getters and setters for GUI integration
-  setRainRate(rate: number) {
-    this.parameters.rainRate = rate;
-    this.updateParameterBuffer();
+  /** Switch to a new LayerCompute (e.g. after a texture resolution change). */
+  public setLayerCompute(layerCompute: LayerCompute): void {
+    this.layerCompute = layerCompute;
+    this.createTransferBindGroups();
   }
 
-  setEvaporationRate(rate: number) {
-    this.parameters.evaporationRate = rate;
-    this.updateParameterBuffer();
+  /** The displayed height scale changed; keep erosion depth proportional. */
+  public setHeightScale(heightScale: number): void {
+    if (heightScale === this.heightScale) return;
+    this.heightScale = heightScale;
+    this.rebase(true);
   }
 
-  setSedimentCapacity(capacity: number) {
-    this.parameters.sedimentCapacity = capacity;
-    this.updateParameterBuffer();
+  /** Change the simulation grid size. This discards erosion done so far. */
+  public setResolution(resolution: number): void {
+    if (resolution === this.resolution) return;
+    this.destroyTextures();
+    this.resolution = resolution;
+    this.parity = 0;
+    this.createTextures();
+    this.createSimulationBindGroups();
+    this.createTransferBindGroups();
+    this.rebase(false);
   }
 
-  setDissolutionConstant(constant: number) {
-    this.parameters.dissolutionConstant = constant;
-    this.updateParameterBuffer();
+  public destroy(): void {
+    this.destroyTextures();
+    this.simParamsBuffer.destroy();
+    this.transferParamsBuffer.destroy();
   }
 
-  setDepositionConstant(constant: number) {
-    this.parameters.depositionConstant = constant;
-    this.updateParameterBuffer();
+  // ---------------------------------------------------------------------------
+  // Internals
+  // ---------------------------------------------------------------------------
+
+  /** Cell units per texture height unit: keeps simulated slopes equal to rendered ones. */
+  private heightUnits(): number {
+    const cellSize = TERRAIN_WORLD_SIZE / this.resolution;
+    return (this.heightScale * TERRAIN_DISPLACEMENT_SCALE) / cellSize;
   }
 
-  // Rain control methods
-  setGlobalRain(enabled: boolean) {
-    this.parameters.globalRainEnabled = enabled;
-    this.updateParameterBuffer();
+  private createPipeline(
+    label: string,
+    code: string,
+    constants?: Record<string, number>
+  ): GPUComputePipeline {
+    return this.device.createComputePipeline({
+      label: `erosion-${label}`,
+      layout: "auto",
+      compute: {
+        module: this.device.createShaderModule({
+          label: `erosion-${label}`,
+          code: `${commonShader}\n${code}`,
+        }),
+        entryPoint: "main",
+        constants,
+      },
+    });
   }
 
-  setMouseRainTool(enabled: boolean) {
-    this.parameters.mouseRainEnabled = enabled;
-    this.updateParameterBuffer();
+  private createTexture(label: string, format: GPUTextureFormat): GPUTexture {
+    return this.device.createTexture({
+      label: `erosion-${label}`,
+      size: [this.resolution, this.resolution],
+      format,
+      usage:
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
   }
 
-  setMouseRainStrength(strength: number) {
-    this.parameters.mouseRainStrength = strength;
-    this.updateParameterBuffer();
+  private createTextures(): void {
+    const pair = (label: string, format: GPUTextureFormat) => [
+      this.createTexture(`${label}-0`, format),
+      this.createTexture(`${label}-1`, format),
+    ];
+    this.terrain = [...pair("terrain", "rg32float"), this.createTexture("terrain-2", "rg32float")];
+    this.flux = pair("flux", "rgba32float");
+    this.velocity = pair("velocity", "rg32float");
+    this.sediment = pair("sediment", "r32float");
+    this.simBase = pair("base", "r32float");
+    this.advectA = this.createTexture("advect-a", "r32float");
+    this.advectB = this.createTexture("advect-b", "r32float");
+    this.thermalFlux = this.createTexture("thermal-flux", "rgba32float");
   }
 
-  setMouseRainRadius(radius: number) {
-    this.parameters.mouseRainRadius = radius;
-    this.updateParameterBuffer();
+  private destroyTextures(): void {
+    for (const texture of [
+      ...this.terrain,
+      ...this.flux,
+      ...this.velocity,
+      ...this.sediment,
+      ...this.simBase,
+      this.advectA,
+      this.advectB,
+      this.thermalFlux,
+    ]) {
+      texture.destroy();
+    }
   }
 
-  // Mouse interaction methods
-  addRainAtPosition(normalizedX: number, normalizedY: number) {
-    // Convert normalized coordinates (0-1) to texture coordinates
-    this.mouseRainPosition.x = normalizedX * this.textureSize;
-    this.mouseRainPosition.y = normalizedY * this.textureSize;
-    this.mouseRainActive = true;
+  private bindGroup(
+    pipeline: GPUComputePipeline,
+    label: string,
+    resources: (GPUTexture | GPUBuffer)[]
+  ): GPUBindGroup {
+    return this.device.createBindGroup({
+      label: `erosion-${label}`,
+      layout: pipeline.getBindGroupLayout(0),
+      entries: resources.map((resource, binding) => ({
+        binding,
+        resource:
+          resource instanceof GPUBuffer
+            ? { buffer: resource }
+            : resource.createView(),
+      })),
+    });
+  }
 
-    console.log(
-      `Adding rain at: (${normalizedX.toFixed(3)}, ${normalizedY.toFixed(
-        3
-      )}) -> texture (${this.mouseRainPosition.x}, ${this.mouseRainPosition.y})`
+  /**
+   * Texture flow for one step (p = parity, q = 1 - p):
+   *   rain       terrain0                    -> terrain1
+   *   flow       terrain1, flux[p]           -> flux[q]
+   *   water      terrain1, flux[q], vel[p]   -> terrain0, vel[q]
+   *   erosion    terrain0, vel[q], sed0      -> terrain1, sed1
+   *   advect     vel[q], sed1 -> A, A -> B; maccormack -> sed0
+   *   smooth     terrain1                    -> terrain2
+   *   thermal    terrain2 -> thermalFlux; terrain2 + thermalFlux -> terrain0
+   */
+  private createSimulationBindGroups(): void {
+    const P = this.simParamsBuffer;
+    const [t0, t1, t2] = this.terrain;
+    const [s0, s1] = this.sediment;
+
+    this.rainBindGroup = this.bindGroup(this.rainPipeline, "rain", [P, t0, t1]);
+    this.smoothBindGroup = this.bindGroup(this.smoothPipeline, "smooth", [P, t1, t2]);
+    this.thermalFluxBindGroup = this.bindGroup(this.thermalFluxPipeline, "thermal-flux", [P, t2, this.thermalFlux]);
+    this.thermalApplyBindGroup = this.bindGroup(this.thermalApplyPipeline, "thermal-apply", [P, t2, this.thermalFlux, t0]);
+
+    this.flowBindGroups = [];
+    this.waterBindGroups = [];
+    this.erosionBindGroups = [];
+    this.advectForwardBindGroups = [];
+    this.advectBackwardBindGroups = [];
+    this.macCormackBindGroups = [];
+
+    for (const p of [0, 1]) {
+      const q = 1 - p;
+      const velOut = this.velocity[q];
+      this.flowBindGroups.push(this.bindGroup(this.flowPipeline, `flow-${p}`, [P, t1, this.flux[p], this.flux[q]]));
+      this.waterBindGroups.push(
+        this.bindGroup(this.waterPipeline, `water-${p}`, [P, t1, this.flux[q], this.velocity[p], t0, velOut])
+      );
+      this.erosionBindGroups.push(this.bindGroup(this.erosionPipeline, `erosion-${p}`, [P, t0, velOut, s0, t1, s1]));
+      this.advectForwardBindGroups.push(
+        this.bindGroup(this.advectForwardPipeline, `advect-forward-${p}`, [P, velOut, s1, this.advectA])
+      );
+      this.advectBackwardBindGroups.push(
+        this.bindGroup(this.advectBackwardPipeline, `advect-backward-${p}`, [P, velOut, this.advectA, this.advectB])
+      );
+      this.macCormackBindGroups.push(
+        this.bindGroup(this.macCormackPipeline, `maccormack-${p}`, [P, velOut, s1, this.advectA, this.advectB, s0])
+      );
+    }
+  }
+
+  private createTransferBindGroups(): void {
+    const T = this.transferParamsBuffer;
+    const base = this.layerCompute.getBaseTexture();
+    this.rebaseBindGroup = this.bindGroup(this.rebasePipeline, "rebase", [
+      T,
+      base,
+      this.terrain[0],
+      this.simBase[0],
+      this.terrain[1],
+      this.simBase[1],
+    ]);
+    this.exportBindGroup = this.bindGroup(this.exportPipeline, "export", [
+      T,
+      base,
+      this.terrain[0],
+      this.simBase[0],
+      this.sediment[0],
+      this.layerCompute.getOutputTexture(),
+    ]);
+  }
+
+  private dispatch(
+    pass: GPUComputePassEncoder,
+    pipeline: GPUComputePipeline,
+    bindGroup: GPUBindGroup,
+    groups: number
+  ): void {
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(groups, groups);
+  }
+
+  private writeSimParams(): void {
+    const p = this.parameters;
+    // Heights are in cell units, so the stable neighbour difference is tan(angle).
+    const talusHeight = Math.tan((p.talusAngle * Math.PI) / 180);
+    this.device.queue.writeBuffer(
+      this.simParamsBuffer,
+      0,
+      new Float32Array([
+        p.timeStep,
+        p.pipeLength,
+        p.pipeArea,
+        p.gravity,
+        p.sedimentCapacity,
+        p.dissolution,
+        p.deposition,
+        p.evaporation,
+        p.minSlope,
+        p.velocityAdvection,
+        p.thermalRate,
+        talusHeight,
+        p.globalRain ? p.rainRate : 0,
+        p.drainEdges ? 1 : 0,
+        this.brush?.u ?? 0,
+        this.brush?.v ?? 0,
+        p.brushRadius,
+        p.brushStrength,
+        this.brush ? 1 : 0,
+        this.time,
+        p.smoothThreshold,
+        0,
+        0,
+        0,
+      ])
     );
-
-    this.updateParameterBuffer();
-
-    // Rain will be applied for one frame, then cleared
-    setTimeout(() => {
-      this.mouseRainActive = false;
-      this.updateParameterBuffer();
-    }, 16); // Clear after ~1 frame at 60fps
   }
 
-  startContinuousRainAtPosition(normalizedX: number, normalizedY: number) {
-    this.mouseRainPosition.x = normalizedX * this.textureSize;
-    this.mouseRainPosition.y = normalizedY * this.textureSize;
-    this.mouseRainActive = true;
-    this.updateParameterBuffer();
+  private writeTransferParams(keepState: boolean): void {
+    this.device.queue.writeBuffer(
+      this.transferParamsBuffer,
+      0,
+      new Float32Array([this.heightUnits(), this.stateHeightUnits, keepState ? 1 : 0, 0])
+    );
   }
 
-  stopContinuousRain() {
-    this.mouseRainActive = false;
-    this.updateParameterBuffer();
+  private rebase(keepState: boolean): void {
+    this.writeTransferParams(keepState);
+    const encoder = this.device.createCommandEncoder({ label: "erosion-rebase" });
+    const pass = encoder.beginComputePass({ label: "erosion-rebase" });
+    this.dispatch(pass, this.rebasePipeline, this.rebaseBindGroup, Math.ceil(this.resolution / WORKGROUP));
+    pass.end();
+    const size = [this.resolution, this.resolution];
+    encoder.copyTextureToTexture({ texture: this.terrain[1] }, { texture: this.terrain[0] }, size);
+    encoder.copyTextureToTexture({ texture: this.simBase[1] }, { texture: this.simBase[0] }, size);
+    this.stateHeightUnits = this.heightUnits();
+    this.encodeExport(encoder);
+    this.device.queue.submit([encoder.finish()]);
   }
 
-  // Getters for rendering integration
-  getHeightTexture(): GPUTexture {
-    return this.heightTexture;
-  }
-
-  getWaterTexture(): GPUTexture {
-    return this.waterTexture;
-  }
-
-  getVelocityTexture(): GPUTexture {
-    return this.velocityTexture;
-  }
-
-  getSedimentTexture(): GPUTexture {
-    return this.sedimentTexture;
-  }
-
-  isSimulationRunning(): boolean {
-    return this.isRunning;
+  private encodeExport(encoder: GPUCommandEncoder): void {
+    const size = this.layerCompute.getTextureSize();
+    const pass = encoder.beginComputePass({ label: "erosion-export" });
+    this.dispatch(pass, this.exportPipeline, this.exportBindGroup, Math.ceil(size / WORKGROUP));
+    pass.end();
   }
 }

@@ -25,19 +25,20 @@ export class GPUContext {
             }
             
             // Request adapter
-            this.adapter = await navigator.gpu.requestAdapter({
+            const adapter = await navigator.gpu.requestAdapter({
                 powerPreference: 'high-performance',
             });
             
-            if (!this.adapter) {
+            if (!adapter) {
                 console.error('Failed to get GPU adapter');
                 return false;
             }
+            this.adapter = adapter;
             
             // Log adapter info (if available)
             try {
-                if (typeof this.adapter.requestAdapterInfo === 'function') {
-                    const info = await this.adapter.requestAdapterInfo();
+                const info = this.adapter.info;
+                if (info) {
                     console.log('GPU Adapter:', {
                         vendor: info.vendor,
                         architecture: info.architecture,
@@ -45,7 +46,7 @@ export class GPUContext {
                         description: info.description,
                     });
                 } else {
-                    console.log('GPU Adapter: requestAdapterInfo not available');
+                    console.log('GPU Adapter: adapter info not available');
                 }
             } catch (e) {
                 console.warn('Could not retrieve adapter info:', e);

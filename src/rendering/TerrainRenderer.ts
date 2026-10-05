@@ -3,8 +3,9 @@ import { GPUContext } from "../core/GPUContext";
 import { PlaneGeometry } from "../geometry/Plane";
 import { PerlinNoise } from "../utils/PerlinNoise";
 import { LayerCompute } from "../core/LayerCompute";
-import { LayerStack } from "../core/LayerSystem";
+import { LayerStack, serializeLayers, MAX_LAYERS, LAYER_FLOATS } from "../core/LayerSystem";
 import terrainShaderRaw from "../shaders/terrain.wgsl?raw";
+import layersShader from "../shaders/layers.wgsl?raw";
 import shadowMapShaderRaw from "../shaders/shadowmap.wgsl?raw";
 
 // Strip any "export default" wrapper if Vite added it
@@ -68,7 +69,7 @@ export class TerrainRenderer {
 
     // Create layer buffer for vertex shader
     this.layerBuffer = gpuContext.device.createBuffer({
-      size: 5 * 18 * 4, // 5 layers * 18 floats * 4 bytes (matching WGSL struct size)
+      size: MAX_LAYERS * LAYER_FLOATS * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -159,7 +160,7 @@ export class TerrainRenderer {
     // Create shader module
     const shaderModule = gpuContext.device.createShaderModule({
       label: "Terrain Shader",
-      code: terrainShader,
+      code: `${layersShader}\n${terrainShader}`,
     });
 
     // Check for shader compilation errors
@@ -371,70 +372,7 @@ export class TerrainRenderer {
    * Update layer data in the vertex shader
    */
   private updateLayerBuffer(layerStack: LayerStack): void {
-    const layers = layerStack.getAllLayers();
-    const data = new Float32Array(5 * 18); // 5 layers * 18 floats (matching WGSL struct)
-
-    console.log("Updating layer buffer with", layers.length, "layers:");
-
-    for (let i = 0; i < Math.min(layers.length, 5); i++) {
-      const layer = layers[i];
-      const offset = i * 18; // 18 floats per layer
-
-      console.log(`Layer ${i}:`, {
-        name: layer.name,
-        type: layer.type,
-        enabled: layer.enabled,
-        strength: layer.strength,
-        blendMode: layer.blendMode,
-      });
-
-      // Serialize layer data to match WGSL struct (18 floats)
-      data[offset + 0] =
-        layer.type === "noise" ? 0.0 : layer.type === "circle" ? 1.0 : 2.0; // layerType
-      data[offset + 1] =
-        layer.blendMode === "add"
-          ? 0.0
-          : layer.blendMode === "mask"
-          ? 1.0
-          : layer.blendMode === "multiply"
-          ? 2.0
-          : 3.0; // blendMode
-      data[offset + 2] = layer.enabled ? 1.0 : 0.0; // enabled
-      data[offset + 3] = layer.strength; // strength
-
-      if (layer.type === "noise") {
-        const noiseLayer = layer as any;
-        data[offset + 4] = noiseLayer.scale || 8.0; // scale
-        data[offset + 5] = noiseLayer.octaves || 4.0; // octaves
-        data[offset + 6] = noiseLayer.persistence || 0.5; // persistence
-        data[offset + 7] = noiseLayer.lacunarity || 2.0; // lacunarity
-        data[offset + 8] = noiseLayer.amplitude || 1.0; // amplitude
-        data[offset + 9] = noiseLayer.seed || 12345; // seed
-        data[offset + 10] = 0.0; // centerX (unused for noise)
-        data[offset + 11] = 0.0; // centerY (unused for noise)
-        data[offset + 12] = 0.0; // radius (unused for noise)
-        data[offset + 13] = 0.0; // falloff (unused for noise)
-        data[offset + 14] = 0.0; // offsetX (unused for noise)
-        data[offset + 15] = 0.0; // offsetY (unused for noise)
-      } else if (layer.type === "circle") {
-        const circleLayer = layer as any;
-        data[offset + 4] = 0.0; // scale (unused for circle)
-        data[offset + 5] = 0.0; // octaves (unused for circle)
-        data[offset + 6] = 0.0; // persistence (unused for circle)
-        data[offset + 7] = 0.0; // lacunarity (unused for circle)
-        data[offset + 8] = 0.0; // amplitude (unused for circle)
-        data[offset + 9] = 0.0; // seed (unused for circle)
-        data[offset + 10] = circleLayer.centerX || 0.0; // centerX
-        data[offset + 11] = circleLayer.centerY || 0.0; // centerY
-        data[offset + 12] = circleLayer.radius || 1.0; // radius
-        data[offset + 13] = circleLayer.falloff || 0.5; // falloff
-        data[offset + 14] = 0.0; // offsetX (unused for circle)
-        data[offset + 15] = 0.0; // offsetY (unused for circle)
-      }
-      data[offset + 16] = 0.0; // imageIndex (unused)
-      data[offset + 17] = 0.0; // padding
-    }
-
+    const data = serializeLayers(layerStack.getAllLayers());
     this.gpuContext.device.queue.writeBuffer(this.layerBuffer, 0, data);
   }
 
@@ -603,7 +541,9 @@ export class TerrainRenderer {
     highThreshold: number = 0.6,
     shadowsEnabled: boolean = true,
     lightDirection: vec3 = vec3.fromValues(0.5, 1.0, 0.3),
-    shadowIntensity: number = 0.5
+    shadowIntensity: number = 0.5,
+    heightScale: number = 0.1,
+    showWater: boolean = true
   ) {
     const uniformData = new Float32Array(80); // 320 bytes / 4 = 80 floats
 
@@ -651,6 +591,10 @@ export class TerrainRenderer {
     uniformData[69] = lightDirection[1];
     uniformData[70] = lightDirection[2];
     uniformData[71] = shadowIntensity;
+
+    // Height scale + water display (offset 72)
+    uniformData[72] = heightScale;
+    uniformData[73] = showWater ? 1.0 : 0.0;
 
     this.gpuContext.device.queue.writeBuffer(
       this.uniformBuffer,
@@ -732,13 +676,15 @@ export class TerrainRenderer {
   }
 
   /**
-   * Generate terrain height data using layer system (now direct procedural)
+   * Generate terrain height data using the layer system
    */
   public async generateTerrainFromLayers(
     layerStack: LayerStack
   ): Promise<void> {
-    // Update layer data in vertex shader buffer
+    // Layer data is still used by the color groups in the terrain shader
     this.updateLayerBuffer(layerStack);
+    // Bake the layers into the height texture that is rendered and eroded
+    await this.layerCompute?.computeLayers(layerStack);
   }
 
   /**

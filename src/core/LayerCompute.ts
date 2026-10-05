@@ -1,5 +1,6 @@
 import { GPUContext } from "../core/GPUContext";
-import { LayerStack, AlphaLayer } from "../core/LayerSystem";
+import { LayerStack, serializeLayers, MAX_LAYERS, LAYER_FLOATS } from "../core/LayerSystem";
+import layersShader from "../shaders/layers.wgsl?raw";
 import layerComputeShaderRaw from "../shaders/layer-compute.wgsl?raw";
 
 // Strip any "export default" wrapper if Vite added it
@@ -21,12 +22,14 @@ export class LayerCompute {
   private gpuContext: GPUContext;
   private computePipeline: GPUComputePipeline;
   private layerBuffer: GPUBuffer;
+  // Raw result of the layer stack. Never modified by erosion.
+  private baseTexture: GPUTexture;
+  // What gets rendered: the base, or the base with erosion applied on top.
   private outputTexture: GPUTexture;
   private imageTextureArray: GPUTexture;
   private imageSampler: GPUSampler;
   private bindGroup: GPUBindGroup;
   private textureSize: number = 2048; // Default high resolution
-  private readonly maxLayers = 5;
   private readonly maxImageLayers = 4; // Reserve some slots for image textures
 
   constructor(gpuContext: GPUContext, textureSize: number = 2048) {
@@ -41,7 +44,7 @@ export class LayerCompute {
         layout: "auto",
         compute: {
           module: gpuContext.device.createShaderModule({
-            code: layerComputeShader,
+            code: `${layersShader}\n${layerComputeShader}`,
           }),
           entryPoint: "computeMain",
         },
@@ -52,15 +55,24 @@ export class LayerCompute {
       throw error;
     }
 
-    // Create output texture (RGBA32Float for high precision erosion simulation)
-    this.outputTexture = gpuContext.device.createTexture({
+    // RGBA32Float for high precision erosion simulation
+    this.baseTexture = gpuContext.device.createTexture({
+      label: "layer-base-texture",
       size: [this.textureSize, this.textureSize],
       format: "rgba32float",
       usage:
         GPUTextureUsage.STORAGE_BINDING |
         GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.COPY_DST, // Added for erosion simulation copying
+        GPUTextureUsage.COPY_SRC,
+    });
+    this.outputTexture = gpuContext.device.createTexture({
+      label: "layer-display-texture",
+      size: [this.textureSize, this.textureSize],
+      format: "rgba32float",
+      usage:
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST,
     });
 
     // Create image texture array for image layers
@@ -78,9 +90,8 @@ export class LayerCompute {
       addressModeV: "clamp-to-edge",
     });
 
-    // Create layer storage buffer (aligned to 32 bytes per layer)
     this.layerBuffer = gpuContext.device.createBuffer({
-      size: this.maxLayers * 32 * 4, // 32 floats * 4 bytes per layer
+      size: MAX_LAYERS * LAYER_FLOATS * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
 
@@ -96,7 +107,7 @@ export class LayerCompute {
         },
         {
           binding: 1,
-          resource: this.outputTexture.createView(),
+          resource: this.baseTexture.createView(),
         },
         {
           binding: 2,
@@ -111,108 +122,13 @@ export class LayerCompute {
   }
 
   /**
-   * Convert layer stack to GPU buffer format
-   */
-  private serializeLayersToBuffer(layers: AlphaLayer[]): Float32Array {
-    const buffer = new Float32Array(this.maxLayers * 32); // 32 floats per layer
-
-    for (let i = 0; i < Math.min(layers.length, this.maxLayers); i++) {
-      const layer = layers[i];
-      const offset = i * 32;
-
-      // Common properties (4 floats)
-      buffer[offset + 0] = this.getLayerTypeId(layer.type);
-      buffer[offset + 1] = this.getBlendModeId(layer.blendMode);
-      buffer[offset + 2] = layer.enabled ? 1.0 : 0.0;
-      buffer[offset + 3] = layer.strength;
-
-      if (layer.type === "noise") {
-        // Noise parameters (6 floats)
-        buffer[offset + 4] = layer.scale;
-        buffer[offset + 5] = layer.octaves;
-        buffer[offset + 6] = layer.persistence;
-        buffer[offset + 7] = layer.lacunarity;
-        buffer[offset + 8] = layer.amplitude;
-        buffer[offset + 9] = layer.seed;
-
-        // Zero out other sections
-        for (let j = 10; j < 32; j++) {
-          buffer[offset + j] = 0.0;
-        }
-      } else if (layer.type === "circle") {
-        // Zero noise section (6 floats)
-        for (let j = 4; j < 10; j++) {
-          buffer[offset + j] = 0.0;
-        }
-
-        // Circle parameters (4 floats)
-        buffer[offset + 10] = layer.centerX;
-        buffer[offset + 11] = layer.centerY;
-        buffer[offset + 12] = layer.radius;
-        buffer[offset + 13] = layer.falloff;
-
-        // Zero out image section
-        for (let j = 14; j < 32; j++) {
-          buffer[offset + j] = 0.0;
-        }
-      } else if (layer.type === "image") {
-        // Zero noise and circle sections (10 floats)
-        for (let j = 4; j < 14; j++) {
-          buffer[offset + j] = 0.0;
-        }
-
-        // Image parameters (4 floats)
-        buffer[offset + 14] = layer.offsetX;
-        buffer[offset + 15] = layer.offsetY;
-        buffer[offset + 16] = 0.0; // imageIndex - will be set when uploading images
-        buffer[offset + 17] = 0.0; // padding
-
-        // Zero out remaining
-        for (let j = 18; j < 32; j++) {
-          buffer[offset + j] = 0.0;
-        }
-      }
-    }
-
-    return buffer;
-  }
-
-  private getLayerTypeId(type: string): number {
-    switch (type) {
-      case "noise":
-        return 0;
-      case "circle":
-        return 1;
-      case "image":
-        return 2;
-      default:
-        return 0;
-    }
-  }
-
-  private getBlendModeId(blendMode: string): number {
-    switch (blendMode) {
-      case "add":
-        return 0;
-      case "mask":
-        return 1;
-      case "multiply":
-        return 2;
-      case "subtract":
-        return 3;
-      default:
-        return 0;
-    }
-  }
-
-  /**
    * Update layer data and run compute shader
    */
   public async computeLayers(layerStack: LayerStack): Promise<void> {
     const layers = layerStack.getAllLayers();
 
     // Update layer buffer
-    const layerData = this.serializeLayersToBuffer(layers);
+    const layerData = serializeLayers(layers);
     this.gpuContext.device.queue.writeBuffer(
       this.layerBuffer,
       0,
@@ -232,6 +148,13 @@ export class LayerCompute {
     computePass.dispatchWorkgroups(workgroupsX, workgroupsY, 1);
 
     computePass.end();
+
+    // Show the fresh base until an erosion simulation writes its result on top.
+    commandEncoder.copyTextureToTexture(
+      { texture: this.baseTexture },
+      { texture: this.outputTexture },
+      [this.textureSize, this.textureSize]
+    );
 
     const commandBuffer = commandEncoder.finish();
     this.gpuContext.device.queue.submit([commandBuffer]);
@@ -295,6 +218,13 @@ export class LayerCompute {
   }
 
   /**
+   * Get the un-eroded layer result (R = height)
+   */
+  public getBaseTexture(): GPUTexture {
+    return this.baseTexture;
+  }
+
+  /**
    * Get the image texture array view for binding
    */
   public getImageTextureArrayView(): GPUTextureView {
@@ -320,6 +250,7 @@ export class LayerCompute {
    */
   public destroy(): void {
     this.layerBuffer.destroy();
+    this.baseTexture.destroy();
     this.outputTexture.destroy();
     this.imageTextureArray.destroy();
   }

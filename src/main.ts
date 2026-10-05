@@ -2,7 +2,8 @@ import { GPUContext } from "./core/GPUContext";
 import { OrbitCamera } from "./core/Camera";
 import { Settings } from "./core/Settings";
 import { LayerCompute } from "./core/LayerCompute";
-import { ErosionSimulationMultiPass as ErosionSimulation } from "./simulation/ErosionSimulation.multipass.js";
+import { ErosionSimulation } from "./simulation/ErosionSimulation";
+import { TerrainPicker } from "./core/TerrainPicker";
 import { DepthOfFieldPass } from "./rendering/DepthOfFieldPass";
 import { BlitPass } from "./rendering/BlitPass";
 import { vec3, mat4 } from "gl-matrix";
@@ -87,93 +88,66 @@ async function init() {
       e.preventDefault();
     });
 
-    // Mouse rain tool controls
+    // Rain brush: hold C and drag on the terrain
     let rainToolActive = false;
-    let continuousRainMode = false;
+    let painting = false;
 
-    // Keyboard controls for rain tool
+    const paintRain = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const ndcX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+      const heightScale = settings.visualization.disableDisplacement
+        ? 0
+        : settings.visualization.heightScale;
+      erosionSimulation.setBrush(terrainPicker.pick(camera, ndcX, ndcY, heightScale));
+    };
+
+    const stopPainting = () => {
+      painting = false;
+      erosionSimulation.setBrush(null);
+    };
+
     window.addEventListener("keydown", (e) => {
-      if (e.key === "c" || e.key === "C") {
-        if (!rainToolActive) {
-          rainToolActive = true;
-          erosionSimulation.setMouseRainTool(true);
-          canvas.style.cursor = "crosshair";
-          console.log("Rain tool activated - click to add water!");
-        }
+      if (e.target instanceof HTMLInputElement) return;
+      if ((e.key === "c" || e.key === "C") && !rainToolActive) {
+        rainToolActive = true;
+        canvas.style.cursor = "crosshair";
       }
     });
 
     window.addEventListener("keyup", (e) => {
       if (e.key === "c" || e.key === "C") {
         rainToolActive = false;
-        continuousRainMode = false;
-        erosionSimulation.setMouseRainTool(false);
-        erosionSimulation.stopContinuousRain();
+        stopPainting();
         canvas.style.cursor = "default";
-        console.log("Rain tool deactivated");
       }
     });
 
-    // Mouse click for rain placement
-    canvas.addEventListener("click", (e) => {
-      if (rainToolActive) {
-        const rect = canvas.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / rect.width;
-        const y = (e.clientY - rect.top) / rect.height;
-
-        // Convert to terrain coordinates (Y is flipped for texture coords)
-        const terrainX = x;
-        const terrainY = 1.0 - y;
-
-        erosionSimulation.addRainAtPosition(terrainX, terrainY);
-        console.log(
-          `Rain added at terrain position: (${terrainX.toFixed(
-            3
-          )}, ${terrainY.toFixed(3)})`
-        );
-      }
-    });
-
-    // Continuous rain on mouse hold
     canvas.addEventListener("mousedown", (e) => {
       if (rainToolActive && e.button === 0) {
-        // Left mouse button
-        continuousRainMode = true;
         e.preventDefault(); // Prevent camera controls
-
-        const rect = canvas.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / rect.width;
-        const y = (e.clientY - rect.top) / rect.height;
-        const terrainX = x;
-        const terrainY = 1.0 - y;
-
-        erosionSimulation.startContinuousRainAtPosition(terrainX, terrainY);
+        painting = true;
+        if (!erosionSimulation.isRunning()) {
+          settings.startErosion();
+        }
+        paintRain(e);
       } else {
         isMouseDown = true;
         camera.handleMouseDown(e, canvas);
       }
     });
 
-    // Update rain position on mouse move
     canvas.addEventListener("mousemove", (e) => {
-      if (continuousRainMode && rainToolActive) {
-        const rect = canvas.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / rect.width;
-        const y = (e.clientY - rect.top) / rect.height;
-        const terrainX = x;
-        const terrainY = 1.0 - y;
-
-        erosionSimulation.startContinuousRainAtPosition(terrainX, terrainY);
+      if (painting && rainToolActive) {
+        paintRain(e);
       } else if (isMouseDown && !rainToolActive) {
         camera.handleMouseMove(e, canvas);
       }
     });
 
-    // Stop continuous rain
     canvas.addEventListener("mouseup", (e) => {
-      if (continuousRainMode) {
-        continuousRainMode = false;
-        erosionSimulation.stopContinuousRain();
+      if (painting) {
+        stopPainting();
       } else {
         isMouseDown = false;
         camera.handleMouseUp(e);
@@ -218,23 +192,28 @@ async function init() {
     );
     console.log("🔍 GPU Device Limits:", gpuContext.device.limits);
     
-    const layerCompute = new LayerCompute(gpuContext, settings.visualization.textureResolution);
+    let layerCompute = new LayerCompute(gpuContext, settings.visualization.textureResolution);
     console.log("✅ LayerCompute created successfully");
 
     // Create terrain renderer with layerCompute
     const terrainRenderer = new TerrainRenderer(gpuContext, planeGeometry, layerCompute);
     console.log("🔗 TerrainRenderer created with LayerCompute");
 
-    console.log("🚀 About to create ErosionSimulation...");
-    const erosionSimulation = new ErosionSimulation(gpuContext, layerCompute);
+    const erosionSimulation = new ErosionSimulation(
+      gpuContext,
+      layerCompute,
+      settings.erosion.resolution,
+      settings.visualization.heightScale
+    );
+    settings.attachErosionSimulation(erosionSimulation);
     console.log("✓ Erosion simulation initialized");
-    
-    // Set erosion simulation reference in settings after it's created
-    settings.erosionSimulation = erosionSimulation;
 
-    // Connect erosion system to terrain renderer for height texture sampling
-    terrainRenderer.setLayerCompute(layerCompute);
-    console.log("🔗 Connected erosion system to terrain renderer");
+    // CPU copy of the terrain used to place the rain brush under the mouse
+    const terrainPicker = new TerrainPicker(gpuContext, layerCompute);
+
+    settings.onHeightScaleChange((heightScale) => {
+      erosionSimulation.setHeightScale(heightScale);
+    });
 
     let currentMeshResolution = settings.visualization.meshResolution;
     let currentTextureResolution = settings.visualization.textureResolution;
@@ -245,15 +224,13 @@ async function init() {
         currentTextureResolution = settings.visualization.textureResolution;
         console.log(`🔄 Recreating LayerCompute with resolution ${currentTextureResolution}x${currentTextureResolution}`);
         
-        // Create new LayerCompute with new resolution
-        const newLayerCompute = new LayerCompute(gpuContext, currentTextureResolution);
-        
-        // Update erosion simulation with new layer compute
-        erosionSimulation.setLayerCompute(newLayerCompute);
-        
-        // Update terrain renderer
-        terrainRenderer.setLayerCompute(newLayerCompute);
-        
+        const oldLayerCompute = layerCompute;
+        layerCompute = new LayerCompute(gpuContext, currentTextureResolution);
+        erosionSimulation.setLayerCompute(layerCompute);
+        terrainRenderer.setLayerCompute(layerCompute);
+        terrainPicker.setLayerCompute(layerCompute);
+        oldLayerCompute.destroy();
+
         console.log("✓ LayerCompute recreated with new resolution");
       }
       
@@ -273,8 +250,13 @@ async function init() {
         terrainRenderer.updateGeometry(newGeometry);
       }
 
-      // Generate terrain using layer system
-      await terrainRenderer.generateTerrainFromLayers(settings.layerStack);
+      // Generate terrain using layer system, then re-apply any erosion on top.
+      // The layer compute is submitted synchronously, so queue the erosion sync
+      // before awaiting to avoid frames that show the terrain without erosion.
+      const generated = terrainRenderer.generateTerrainFromLayers(settings.layerStack);
+      erosionSimulation.syncWithBase();
+      terrainPicker.refresh();
+      await generated;
     });
 
     // Handle image uploads for image layers
@@ -295,8 +277,11 @@ async function init() {
 
     // Generate initial terrain using layer system
     console.log("Generating initial terrain...");
-    await terrainRenderer.generateTerrainFromLayers(settings.layerStack);
-    
+    const initialTerrain = terrainRenderer.generateTerrainFromLayers(settings.layerStack);
+    erosionSimulation.syncWithBase();
+    terrainPicker.refresh();
+    await initialTerrain;
+
     // Initialize color data
     terrainRenderer.updateColorData(settings.colorSystem, settings.layerStack);
     console.log("✓ Initial terrain generated from layers");
@@ -382,6 +367,9 @@ async function init() {
 
       // Step erosion simulation if running
       erosionSimulation.step();
+      if (erosionSimulation.isRunning() && frameCount % 30 === 0) {
+        terrainPicker.refresh();
+      }
 
       // Debug first frame
       if (frameCount === 0) {
@@ -471,7 +459,9 @@ async function init() {
         settings.colors.highThreshold,
         settings.lighting.shadowsEnabled,
         lightDirection,
-        settings.lighting.shadowIntensity
+        settings.lighting.shadowIntensity,
+        settings.visualization.heightScale,
+        settings.erosion.showWater
       );
 
       // Begin rendering

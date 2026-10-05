@@ -44,6 +44,51 @@ export interface ImageLayer extends BaseLayer {
 
 export type AlphaLayer = NoiseLayer | CircleLayer | ImageLayer;
 
+export const MAX_LAYERS = 5;
+export const LAYER_FLOATS = 18; // Must match struct Layer in shaders/layers.wgsl
+
+const BLEND_MODE_IDS: Record<BlendMode, number> = {
+  add: 0,
+  mask: 1,
+  multiply: 2,
+  subtract: 3,
+};
+
+/**
+ * Pack layers into the GPU layout of struct Layer (shaders/layers.wgsl).
+ */
+export function serializeLayers(layers: AlphaLayer[]): Float32Array<ArrayBuffer> {
+  const data = new Float32Array(MAX_LAYERS * LAYER_FLOATS);
+
+  layers.slice(0, MAX_LAYERS).forEach((layer, i) => {
+    const o = i * LAYER_FLOATS;
+    data[o + 0] = layer.type === "noise" ? 0 : layer.type === "circle" ? 1 : 2;
+    data[o + 1] = BLEND_MODE_IDS[layer.blendMode] ?? 0;
+    data[o + 2] = layer.enabled ? 1 : 0;
+    data[o + 3] = layer.strength;
+
+    if (layer.type === "noise") {
+      data[o + 4] = layer.scale || 8.0;
+      data[o + 5] = layer.octaves || 4.0;
+      data[o + 6] = layer.persistence || 0.5;
+      data[o + 7] = layer.lacunarity || 2.0;
+      data[o + 8] = layer.amplitude || 1.0;
+      data[o + 9] = layer.seed || 12345;
+    } else if (layer.type === "circle") {
+      data[o + 10] = layer.centerX || 0.0;
+      data[o + 11] = layer.centerY || 0.0;
+      data[o + 12] = layer.radius || 1.0;
+      data[o + 13] = layer.falloff || 0.5;
+    } else {
+      data[o + 14] = layer.offsetX || 0.0;
+      data[o + 15] = layer.offsetY || 0.0;
+      data[o + 16] = layer.imageIndex || 0;
+    }
+  });
+
+  return data;
+}
+
 // ============================================================================
 // DEFAULT LAYER SETTINGS - Edit these to change initial terrain appearance
 // ============================================================================

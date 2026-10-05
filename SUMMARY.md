@@ -46,6 +46,15 @@
 
 **Savings: ~543KB (~79% smaller)**
 
+## 🌊 Erosion (current state)
+
+The erosion simulation follows Mei et al. 2007, [Fast Hydraulic Erosion Simulation and Visualization on GPU](http://www-ljk.imag.fr/Publications/Basilic/com.lmc.publi.PUBLI_Inproceedings@117681e94b6_fff75c/FastErosion_PG07.pdf),
+ported from the original WebGL shaders in `src-old/`. See `MIGRATION_PLAN.md` → Phase 7 for the pass-by-pass breakdown.
+
+**How to use:** open "🌊 Erosion Simulation", enable "Rain Everywhere" and tick "Running",
+or hold **C** and drag on the terrain to paint rain (this auto-starts the simulation).
+"Reset Erosion" returns to the layer terrain. Editing layers keeps the erosion carved so far.
+
 ## 🚀 Next Steps
 
 ### To Test the Setup:
@@ -100,17 +109,17 @@ This allows both versions to coexist until migration is complete.
 - [x] Camera controls work
 - [x] Basic render loop runs
 
-### Phase 2: Rendering
-- [ ] Terrain mesh renders
-- [ ] Height texture maps correctly
-- [ ] Normal maps work
-- [ ] Water surface renders
+### Phase 2: Rendering (DONE ✅)
+- [x] Terrain mesh renders
+- [x] Height texture maps correctly
+- [x] Normal maps work
+- [x] Water renders (tinted on the terrain surface)
 
-### Phase 3: Simulation
-- [ ] Water flow computes correctly
-- [ ] Sediment transport works
-- [ ] Erosion visible on terrain
-- [ ] Performance acceptable (60fps)
+### Phase 3: Simulation (DONE ✅)
+- [x] Water flow computes correctly
+- [x] Sediment transport works
+- [x] Erosion visible on terrain
+- [x] Performance acceptable (60fps at 1024² sim, 3 steps/frame)
 
 ### Phase 4: macOS Verification (CRITICAL)
 - [ ] Test on macOS Safari
